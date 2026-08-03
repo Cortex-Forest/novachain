@@ -2,10 +2,320 @@
 <html lang="zh">
 <head>
   <meta charset="UTF-8" />
-  <meta http-equiv="refresh" content="0; url=./nova.html" />
-  <title>Nova Chain</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Nova Chain · 超新星并行宇宙</title>
+  <style>
+    :root {
+      --bg: #04050d;
+      --panel: rgba(9, 12, 24, 0.86);
+      --border: rgba(0, 240, 255, 0.18);
+      --accent: #00f0ff;
+      --accent2: #b44dff;
+      --text: #eef4ff;
+      --dim: #8ea0b9;
+      --success: #5ef2b0;
+      --warning: #ffd166;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      background: radial-gradient(circle at top left, rgba(0,240,255,0.16), transparent 28%),
+                  radial-gradient(circle at top right, rgba(180,77,255,0.14), transparent 34%),
+                  var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    .aurora {
+      position: fixed; inset: 0;
+      pointer-events: none;
+      background: linear-gradient(120deg, transparent, rgba(0,240,255,0.06), transparent 70%);
+      mix-blend-mode: screen;
+      animation: drift 12s ease-in-out infinite;
+    }
+
+    @keyframes drift {
+      0%, 100% { transform: translate3d(-3%, -2%, 0) scale(1); }
+      50% { transform: translate3d(3%, 2%, 0) scale(1.04); }
+    }
+
+    .page {
+      position: relative;
+      z-index: 1;
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 32px 20px 60px;
+    }
+
+    .hero-card {
+      display: grid;
+      grid-template-columns: 1.2fr 0.8fr;
+      gap: 20px;
+      background: linear-gradient(135deg, rgba(8, 11, 23, 0.95), rgba(18, 26, 45, 0.9));
+      border: 1px solid var(--border);
+      border-radius: 28px;
+      padding: 28px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.25);
+      backdrop-filter: blur(18px);
+    }
+
+    .eyebrow {
+      display: inline-block;
+      padding: 7px 12px;
+      border-radius: 999px;
+      background: rgba(0,240,255,0.12);
+      color: var(--accent);
+      font-size: 0.85rem;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      margin-bottom: 14px;
+    }
+
+    h1 {
+      font-size: clamp(2rem, 3.3vw, 3.2rem);
+      line-height: 1.1;
+      margin-bottom: 14px;
+      letter-spacing: -0.03em;
+    }
+
+    .sub {
+      color: var(--dim);
+      font-size: 1rem;
+      line-height: 1.7;
+      max-width: 620px;
+      margin-bottom: 20px;
+    }
+
+    .hero-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-bottom: 18px;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 12px 18px;
+      border-radius: 999px;
+      text-decoration: none;
+      font-weight: 700;
+      transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    .btn:hover { transform: translateY(-2px); }
+    .btn.primary {
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      color: #04101b;
+      box-shadow: 0 10px 28px rgba(0,240,255,0.18);
+    }
+    .btn.secondary {
+      background: rgba(255,255,255,0.06);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 13px;
+      border-radius: 999px;
+      font-weight: 700;
+      font-size: 0.9rem;
+      margin-bottom: 8px;
+      border: 1px solid transparent;
+    }
+    .status-pill.node {
+      color: var(--success);
+      background: rgba(94, 242, 176, 0.12);
+      border-color: rgba(94,242,176,0.2);
+    }
+    .status-pill.demo {
+      color: var(--warning);
+      background: rgba(255, 209, 102, 0.12);
+      border-color: rgba(255,209,102,0.2);
+    }
+
+    .status-text {
+      color: var(--dim);
+      font-size: 0.95rem;
+      margin-bottom: 16px;
+    }
+
+    .hero-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .panel-card {
+      padding: 20px;
+      border-radius: 20px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,0.04);
+    }
+
+    .panel-title {
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 0.16em;
+      color: var(--dim);
+      margin-bottom: 8px;
+    }
+
+    .panel-value {
+      font-size: 1.8rem;
+      font-weight: 800;
+      margin-bottom: 6px;
+      color: var(--accent);
+    }
+
+    .panel-desc {
+      color: var(--dim);
+      font-size: 0.95rem;
+      line-height: 1.6;
+    }
+
+    .feature-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .feature-item {
+      padding: 12px 14px;
+      border-radius: 14px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,0.04);
+      color: var(--dim);
+    }
+
+    .feature-item strong { color: var(--text); }
+
+    .capabilities {
+      margin-top: 24px;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+    }
+
+    .card {
+      padding: 20px;
+      border-radius: 18px;
+      background: rgba(9, 12, 24, 0.82);
+      border: 1px solid var(--border);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
+    }
+
+    .card h3 { margin-bottom: 8px; color: var(--accent); }
+    .card p { color: var(--dim); line-height: 1.65; }
+
+    @media (max-width: 900px) {
+      .hero-card { grid-template-columns: 1fr; }
+      .capabilities { grid-template-columns: 1fr; }
+    }
+  </style>
 </head>
 <body>
-  <p>正在跳转到 Nova Chain 页面...</p>
+  <div class="aurora"></div>
+  <main class="page">
+    <section class="hero-card">
+      <div>
+        <div class="eyebrow">NovaChain · Quantum-first Layer 1</div>
+        <h1>从链上创作者经济出发，拥抱抗量子未来</h1>
+        <p class="sub">Nova Chain 将钱包、质押、合约、验证与早期激励统一进一个极简交互入口。页面会自动判断当前是本地节点模式还是静态演示模式，帮你快速进入体验。</p>
+        <div class="hero-actions">
+          <a class="btn primary" id="launchBtn" href="./nova.html">进入 Nova 体验</a>
+          <a class="btn secondary" href="#capabilities">查看核心能力</a>
+        </div>
+        <div class="status-pill demo" id="modeBadge">检测中…</div>
+        <p class="status-text" id="modeStatus">正在自动检测本地节点状态…</p>
+      </div>
+      <div class="hero-panel">
+        <div class="panel-card">
+          <div class="panel-title">当前模式</div>
+          <div class="panel-value" id="panelMode">检测中…</div>
+          <div class="panel-desc" id="panelDetail">正在尝试连接本地 RPC 或静态演示服务。</div>
+        </div>
+        <div class="feature-list">
+          <div class="feature-item"><strong>抗量子钱包</strong> · 浏览器内生成与导入私钥</div>
+          <div class="feature-item"><strong>实时看板</strong> · 区块高度、节点、质押与预售进度一目了然</div>
+          <div class="feature-item"><strong>部署与调用</strong> · 合约部署、调用、质押与早期激励全流程可视化</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="capabilities" id="capabilities">
+      <div class="card">
+        <h3>⚡ 节点模式</h3>
+        <p>若检测到本地节点，页面会切换至可连接真实 RPC 的生产体验模式。</p>
+      </div>
+      <div class="card">
+        <h3>🎭 演示模式</h3>
+        <p>若未检测到节点，页面自动降级为静态演示，让你依然可以浏览产品体验。</p>
+      </div>
+      <div class="card">
+        <h3>🔮 未来可扩展</h3>
+        <p>为后续接入真实共识、钱包签名、链下预售与跨链验证预留了完整入口。</p>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const nodeCandidates = [
+      window.location.origin + '/api/status',
+      'http://127.0.0.1:8080/api/status',
+      'http://localhost:8080/api/status'
+    ];
+
+    function updateLanding(mode, detail) {
+      const badge = document.getElementById('modeBadge');
+      const status = document.getElementById('modeStatus');
+      const panelMode = document.getElementById('panelMode');
+      const panelDetail = document.getElementById('panelDetail');
+      const launchBtn = document.getElementById('launchBtn');
+
+      if (mode === 'node') {
+        badge.className = 'status-pill node';
+        badge.textContent = 'NODE ONLINE';
+        panelMode.textContent = '节点模式';
+        launchBtn.href = './nova.html?mode=node';
+        launchBtn.textContent = '进入节点模式';
+      } else {
+        badge.className = 'status-pill demo';
+        badge.textContent = 'DEMO MODE';
+        panelMode.textContent = '演示模式';
+        launchBtn.href = './nova.html?mode=demo';
+        launchBtn.textContent = '进入演示体验';
+      }
+
+      status.textContent = detail;
+      panelDetail.textContent = mode === 'node'
+        ? '已检测到可访问的 RPC 节点，支持真实链上交互。'
+        : '未检测到节点，已自动切换为静态演示体验。';
+    }
+
+    async function detectRuntimeMode() {
+      for (const url of nodeCandidates) {
+        try {
+          const response = await fetch(url, { method: 'GET', headers: { Accept: 'application/json' } });
+          if (!response.ok) continue;
+          const data = await response.json();
+          if (data && typeof data === 'object') {
+            updateLanding('node', `节点已就绪 · ${data.node || '本地 RPC'}`);
+            return;
+          }
+        } catch (error) {
+          // ignore and continue to next candidate
+        }
+      }
+      updateLanding('demo', '未检测到节点，已自动切换为静态演示体验。');
+    }
+
+    document.addEventListener('DOMContentLoaded', detectRuntimeMode);
+  </script>
 </body>
 </html>

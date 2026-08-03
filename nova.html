@@ -240,6 +240,26 @@
         }
         .presale-config input { flex: 1; min-width: 200px; }
 
+        .mode-banner {
+            margin: 0 auto 1rem;
+            max-width: 900px;
+            padding: 0.8rem 1rem;
+            border-radius: 999px;
+            text-align: center;
+            font-size: 0.9rem;
+            font-weight: 600;
+            border: 1px solid var(--border);
+            backdrop-filter: var(--blur);
+        }
+        .mode-banner.node {
+            color: #92f2c3;
+            background: rgba(94, 242, 176, 0.12);
+        }
+        .mode-banner.demo {
+            color: #ffd166;
+            background: rgba(255, 209, 102, 0.12);
+        }
+
         @media (max-width: 600px) {
             .stat-grid { grid-template-columns: 1fr; }
             .stat-list { grid-template-columns: 1fr; }
@@ -260,6 +280,8 @@
         <div class="logo">NOVA</div>
         <div class="tagline">超新星并行宇宙 · 创作者驱动的抗量子公链</div>
     </div>
+
+    <div id="runtimeModeBanner" class="mode-banner demo">正在检测运行模式…</div>
 
     <!-- 导航 -->
     <div class="nav-tabs" id="navTabs">
@@ -612,17 +634,42 @@
         }
     }
 
+    function setRuntimeMode(mode, message) {
+        const banner = document.getElementById('runtimeModeBanner');
+        if (banner) {
+            banner.className = 'mode-banner ' + mode;
+            banner.innerHTML = `<strong>${mode === 'node' ? '节点模式' : '演示模式'}</strong> · ${message}`;
+        }
+    }
+
     async function checkNode() {
         const d = await api('/api/status');
         if (d.demoMode) {
             document.getElementById('nodeStatus').textContent = '演示模式：未连接真实节点，页面已切换为静态展示。';
+            setRuntimeMode('demo', '未检测到节点，已自动切换为演示体验。');
         } else if (d.error) {
             document.getElementById('nodeStatus').textContent = '连接失败：请先启动节点服务，例如运行 python nova_node.py --p2p 9000 --rpc 8080';
+            setRuntimeMode('demo', '连接失败，当前以演示模式展示。');
             return;
         } else {
             document.getElementById('nodeStatus').textContent = '✅ 在线: '+ (d.node||'') + ' | 节点数: '+(d.peers||0);
+            setRuntimeMode('node', '已检测到可用节点，正在使用真实 RPC。');
         }
         fetchBalance();
+    }
+
+    async function initializeEnvironment() {
+        const modeParam = new URLSearchParams(window.location.search).get('mode');
+        if (modeParam === 'demo') {
+            setRuntimeMode('demo', '已通过落地页切换到演示模式。');
+            document.getElementById('nodeStatus').textContent = '演示模式：已为你打开静态体验入口。';
+            return;
+        }
+        if (modeParam === 'node') {
+            await checkNode();
+            return;
+        }
+        await checkNode();
     }
 
     async function fetchBalance() {
@@ -794,8 +841,11 @@
         } catch(e) { return ''; }
     }
 
-    setTimeout(refreshDashboard, 1000);
-    window.onload = updateUI;
+    window.onload = async function() {
+        updateUI();
+        await initializeEnvironment();
+        await refreshDashboard();
+    };
 </script>
 </body>
 </html>
