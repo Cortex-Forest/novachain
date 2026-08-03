@@ -1,6 +1,24 @@
 from aiohttp import web
 
+
+@web.middleware
+async def cors_middleware(request, handler):
+    if request.method == 'OPTIONS':
+        resp = web.Response(status=204)
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        resp.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+        resp.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+        return resp
+
+    response = await handler(request)
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+    return response
+
+
 def setup_routes(app, node):
+    app.middlewares.append(cors_middleware)
     app.router.add_get('/api/status', node.rpc_status)
     app.router.add_post('/api/send', node.rpc_send)
     app.router.add_post('/api/deploy', node.rpc_deploy)

@@ -4,7 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <title>Nova Chain · 超新星并行宇宙</title>
-    <script src="https://cdn.jsdelivr.net/npm/elliptic@6.5.4/lib/elliptic.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/js-sha3@0.8.0/build/sha3.min.js"></script>
     <style>
         :root {
@@ -460,26 +459,60 @@
         });
     });
 
-    // ========== 密码学 ==========
-    const EC = elliptic.ec;
-    const ec = new EC('secp256k1');
+// ========== 密码学 ==========
+    function hexToBytes(hex) {
+        const clean = (hex || '').replace(/^0x/, '');
+        if (!clean) return new Uint8Array();
+        return new Uint8Array(clean.match(/.{1,2}/g).map(b => parseInt(b, 16)));
+    }
 
-    function deriveAddress(compressedPubHex) {
-        const pubBytes = new Uint8Array(compressedPubHex.match(/.{1,2}/g).map(b => parseInt(b, 16)));
-        return '0x' + sha3_256(pubBytes).substring(0, 40);
+    function bytesToHex(bytes) {
+        return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+    }
+
+    function utf8ToBytes(str) {
+        return new TextEncoder().encode(str);
+    }
+
+    function hmacSha3_256(keyBytes, messageBytes) {
+        const blockSize = 64;
+        const key = keyBytes.length > blockSize ? hexToBytes(sha3_256(keyBytes)) : keyBytes;
+        const ipad = new Uint8Array(blockSize);
+        const opad = new Uint8Array(blockSize);
+        key.forEach((b, i) => {
+            ipad[i] = b ^ 0x36;
+            opad[i] = b ^ 0x5c;
+        });
+        const inner = new Uint8Array(ipad.length + messageBytes.length);
+        inner.set(ipad, 0);
+        inner.set(messageBytes, ipad.length);
+        const innerHash = hexToBytes(sha3_256(inner));
+        const outer = new Uint8Array(opad.length + innerHash.length);
+        outer.set(opad, 0);
+        outer.set(innerHash, opad.length);
+        return hexToBytes(sha3_256(outer));
+    }
+
+    function deriveAddress(pubHex) {
+        const pubBytes = hexToBytes(pubHex);
+        return '0x' + sha3_512(pubBytes).substring(0, 40);
     }
 
     function sign(privHex, msg) {
-        const key = ec.keyFromPrivate(privHex, 'hex');
-        const sig = key.sign(sha256(msg));
-        let bin = ''; sig.toDER().forEach(b => bin += String.fromCharCode(b));
-        return btoa(bin);
+        const privBytes = hexToBytes(privHex);
+        const pubBytes = hexToBytes(getPubFromPriv(privHex));
+        const sigBytes = hmacSha3_256(pubBytes, utf8ToBytes(msg));
+        return bytesToHex(sigBytes);
     }
 
     function getPriv() { return localStorage.getItem('nova_priv'); }
     function setPriv(k) { localStorage.setItem('nova_priv', k); }
-    function getAddrFromPriv(priv) { return deriveAddress(ec.keyFromPrivate(priv, 'hex').getPublic(true, 'hex')); }
-    function getPubFromPriv(priv) { return ec.keyFromPrivate(priv, 'hex').getPublic(true, 'hex'); }
+    function getAddrFromPriv(priv) {
+        return deriveAddress(getPubFromPriv(priv));
+    }
+    function getPubFromPriv(priv) {
+        return sha3_256(hexToBytes(priv));
+    }
 
     function updateUI() {
         const priv = getPriv();
@@ -493,8 +526,14 @@
     }
 
     function createWallet() {
-        const key = ec.genKeyPair();
-        setPriv(key.getPrivate('hex'));
+        const randomBytes = new Uint8Array(32);
+        if (window.crypto && window.crypto.getRandomValues) {
+            window.crypto.getRandomValues(randomBytes);
+        } else {
+            for (let i = 0; i < randomBytes.length; i++) randomBytes[i] = Math.floor(Math.random() * 256);
+        }
+        const priv = bytesToHex(randomBytes);
+        setPriv(priv);
         updateUI();
         alert('抗量子钱包已创建！请导出私钥并离线备份。');
     }
@@ -502,8 +541,11 @@
     function importWallet() {
         const priv = document.getElementById('importKey').value.trim();
         if (!priv) return alert('请输入私钥');
-        try { ec.keyFromPrivate(priv, 'hex'); setPriv(priv); updateUI(); alert('导入成功'); }
-        catch(e) { alert('无效私钥'); }
+        const clean = priv.replace(/^0x/, '');
+        if (!/^[0-9a-fA-F]{32,}$/.test(clean)) return alert('无效私钥');
+        setPriv(clean);
+        updateUI();
+        alert('导入成功');
     }
 
     function exportKey() {
@@ -524,8 +566,12 @@
 
     async function checkNode() {
         const d = await api('/api/status');
-        document.getElementById('nodeStatus').textContent = d.error ? '连接失败' : '✅ 在线: '+ (d.node||'') + ' | 节点数: '+(d.peers||0);
-        if (!d.error) fetchBalance();
+        if (d.error) {
+            document.getElementById('nodeStatus').textContent = '连接失败：请先启动节点服务，例如运行 python nova_node.py --p2p 9000 --rpc 8080';
+            return;
+        }
+        document.getElementById('nodeStatus').textContent = '✅ 在线: '+ (d.node||'') + ' | 节点数: '+(d.peers||0);
+        fetchBalance();
     }
 
     async function fetchBalance() {
@@ -558,7 +604,9 @@
     async function verifyTx() {
         const txid = document.getElementById('txidToVerify').value.trim();
         if (!txid) return alert('请输入交易ID');
-        const res = await api('/api/light/proof/'+txid);
+        const priv = getPriv();
+        const addr = priv ? getAddrFromPriv(priv) : '';
+        const res = await api('/api/light/verify', 'POST', { addr, txid });
         document.getElementById('verifyResult').textContent = JSON.stringify(res, null, 2);
     }
 

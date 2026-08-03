@@ -32,7 +32,7 @@ class StateStore:
 
     def _load_genesis(self, path):
         try:
-            with open(path) as f:
+            with open(path, encoding="utf-8") as f:
                 alloc = json.load(f)["genesis"]["alloc"]
                 for a, v in alloc.items():
                     self.balances[a] = v
