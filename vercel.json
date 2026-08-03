@@ -1,0 +1,7 @@
+{
+  "version": 2,
+  "name": "novachain-web",
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/$1" }
+  ]
+}
