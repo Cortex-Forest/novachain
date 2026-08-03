@@ -1,0 +1,702 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Nova Chain · 超新星并行宇宙</title>
+    <script src="https://cdn.jsdelivr.net/npm/elliptic@6.5.4/lib/elliptic.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/js-sha3@0.8.0/build/sha3.min.js"></script>
+    <style>
+        :root {
+            --bg-deep: #050510;
+            --bg-card: rgba(18, 18, 26, 0.85);
+            --border: rgba(0, 240, 255, 0.2);
+            --accent: #00f0ff;
+            --accent2: #b44dff;
+            --text: #e0e0f0;
+            --dim: #7a7a9a;
+            --danger: #ff4d6a;
+            --radius: 16px;
+            --blur: blur(12px);
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            background: var(--bg-deep);
+            color: var(--text);
+            font-family: 'SF Pro Display', 'Segoe UI', system-ui, sans-serif;
+            min-height: 100vh;
+            overflow-x: hidden;
+            position: relative;
+        }
+
+        /* ---- 粒子背景 ---- */
+        #particles {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none; z-index: 0;
+        }
+        .particle {
+            position: absolute;
+            background: var(--accent);
+            border-radius: 50%;
+            opacity: 0.3;
+            animation: floatUp linear infinite;
+        }
+        @keyframes floatUp {
+            0% { transform: translateY(0) scale(1); opacity: 0; }
+            10% { opacity: 0.5; }
+            90% { opacity: 0.5; }
+            100% { transform: translateY(-100vh) scale(0); opacity: 0; }
+        }
+
+        /* ---- 主容器 ---- */
+        .app-container {
+            position: relative; z-index: 1;
+            max-width: 900px; margin: 0 auto; padding: 1rem;
+            backdrop-filter: var(--blur);
+        }
+
+        /* ---- 头部 ---- */
+        .header {
+            text-align: center; padding: 2rem 0 1rem;
+        }
+        .header .logo {
+            font-size: 3rem; font-weight: 800; letter-spacing: -2px;
+            background: linear-gradient(135deg, var(--accent), var(--accent2));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .header .tagline {
+            color: var(--dim); font-size: 0.95rem; margin-top: 0.3rem;
+        }
+
+        /* ---- 导航 ---- */
+        .nav-tabs {
+            display: flex; gap: 0; justify-content: center;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 50px; padding: 4px;
+            margin-bottom: 1.5rem;
+            backdrop-filter: var(--blur);
+            flex-wrap: wrap;
+        }
+        .nav-tab {
+            padding: 0.7rem 1.2rem; border-radius: 50px;
+            cursor: pointer; font-weight: 600; font-size: 0.85rem;
+            color: var(--dim); transition: all 0.3s;
+            white-space: nowrap; border: none; background: transparent;
+        }
+        .nav-tab.active {
+            background: var(--accent); color: #000;
+            box-shadow: 0 0 20px rgba(0, 240, 255, 0.4);
+        }
+
+        /* ---- 面板 ---- */
+        .panel {
+            display: none;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 1.5rem;
+            backdrop-filter: var(--blur);
+            margin-bottom: 1.5rem;
+        }
+        .panel.active { display: block; }
+        .panel h2 {
+            font-size: 1.2rem; margin-bottom: 1rem;
+            color: var(--accent); display: flex; align-items: center; gap: 0.5rem;
+        }
+
+        /* ---- 表单 ---- */
+        input, textarea, button, select {
+            background: rgba(26, 26, 40, 0.8);
+            border: 1px solid var(--border);
+            border-radius: 10px; padding: 0.8rem;
+            color: var(--text); font-size: 0.9rem;
+            width: 100%; margin-bottom: 0.7rem; font-family: inherit;
+            transition: all 0.2s;
+        }
+        input:focus, textarea:focus {
+            outline: none; border-color: var(--accent);
+            box-shadow: 0 0 12px rgba(0, 240, 255, 0.15);
+        }
+        button {
+            background: linear-gradient(135deg, var(--accent), var(--accent2));
+            color: #000; font-weight: 700; border: none;
+            cursor: pointer; letter-spacing: 0.5px;
+            transition: all 0.3s;
+        }
+        button:active { transform: scale(0.96); opacity: 0.8; }
+        .btn-sm { width: auto; padding: 0.5rem 1rem; font-size: 0.8rem; }
+        .row { display: flex; gap: 0.5rem; }
+        .row input { flex: 1; }
+
+        /* ---- 数据显示 ---- */
+        .address-box {
+            word-break: break-all; font-family: 'SF Mono', monospace;
+            background: #000; padding: 0.7rem; border-radius: 10px;
+            font-size: 0.8rem; margin-bottom: 0.5rem;
+            border: 1px solid var(--border);
+        }
+        .bal {
+            font-size: 1.8rem; font-weight: 700;
+            background: linear-gradient(135deg, var(--accent), var(--accent2));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .response {
+            background: rgba(0,0,0,0.6); border: 1px solid var(--border);
+            border-radius: 10px; padding: 0.8rem; font-family: 'SF Mono', monospace;
+            white-space: pre-wrap; font-size: 0.8rem; max-height: 200px;
+            overflow-y: auto; margin-top: 0.5rem; color: var(--accent);
+        }
+        .warning { color: var(--danger); font-size: 0.78rem; margin-bottom: 0.5rem; }
+        .tag {
+            display: inline-block; padding: 0.2rem 0.6rem; border-radius: 20px;
+            font-size: 0.7rem; font-weight: 600;
+            background: rgba(0,240,255,0.15); color: var(--accent);
+        }
+
+        /* ---- 看板卡片 ---- */
+        .stat-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+        }
+        .stat-card {
+            background: linear-gradient(135deg, rgba(0,240,255,0.08), rgba(180,77,255,0.08));
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 1.2rem;
+            text-align: center;
+            backdrop-filter: var(--blur);
+            transition: transform 0.2s;
+        }
+        .stat-card:hover { transform: translateY(-2px); }
+        .stat-card .label {
+            font-size: 0.8rem; color: var(--dim);
+            text-transform: uppercase; letter-spacing: 1px;
+            margin-bottom: 0.5rem;
+        }
+        .stat-card .value {
+            font-size: 2rem; font-weight: 700;
+            background: linear-gradient(135deg, var(--accent), var(--accent2));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        /* 预售进度条 */
+        .progress-section {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+            backdrop-filter: var(--blur);
+        }
+        .progress-header {
+            display: flex; justify-content: space-between; align-items: center;
+            margin-bottom: 1rem;
+        }
+        .progress-header .stage {
+            background: linear-gradient(135deg, var(--accent), var(--accent2));
+            color: #000; font-weight: 700; padding: 0.3rem 0.9rem;
+            border-radius: 20px; font-size: 0.85rem;
+        }
+        .progress-bar-bg {
+            background: rgba(255,255,255,0.05);
+            border-radius: 20px; height: 12px; overflow: hidden;
+            margin-bottom: 0.8rem;
+        }
+        .progress-bar-fill {
+            height: 100%; border-radius: 20px;
+            background: linear-gradient(90deg, var(--accent), var(--accent2));
+            transition: width 0.8s ease;
+        }
+        .progress-meta {
+            display: flex; justify-content: space-between;
+            font-size: 0.8rem; color: var(--dim);
+        }
+
+        /* 合约统计列表 */
+        .stat-list {
+            display: grid; grid-template-columns: 1fr 1fr; gap: 0.8rem;
+        }
+        .stat-item {
+            background: rgba(0,0,0,0.4); border-radius: 12px;
+            padding: 1rem; border: 1px solid var(--border);
+        }
+        .stat-item .s-label { color: var(--dim); font-size: 0.8rem; }
+        .stat-item .s-value { font-size: 1.3rem; font-weight: 700; color: var(--accent); }
+        .stat-item .s-reward { font-size: 0.8rem; color: var(--accent2); }
+
+        .presale-config {
+            display: flex; gap: 0.5rem; margin-bottom: 1rem;
+            flex-wrap: wrap;
+        }
+        .presale-config input { flex: 1; min-width: 200px; }
+
+        @media (max-width: 600px) {
+            .stat-grid { grid-template-columns: 1fr; }
+            .stat-list { grid-template-columns: 1fr; }
+            .nav-tab { padding: 0.5rem 0.8rem; font-size: 0.75rem; }
+            .header .logo { font-size: 2.2rem; }
+        }
+    </style>
+</head>
+<body>
+
+<!-- 粒子背景 -->
+<div id="particles"></div>
+
+<!-- 主容器 -->
+<div class="app-container">
+    <!-- 头部 -->
+    <div class="header">
+        <div class="logo">NOVA</div>
+        <div class="tagline">超新星并行宇宙 · 创作者驱动的抗量子公链</div>
+    </div>
+
+    <!-- 导航 -->
+    <div class="nav-tabs" id="navTabs">
+        <button class="nav-tab active" data-panel="wallet">🔐 钱包</button>
+        <button class="nav-tab" data-panel="verify">🔍 验证</button>
+        <button class="nav-tab" data-panel="deploy">📜 合约</button>
+        <button class="nav-tab" data-panel="stake">⚡ 质押</button>
+        <button class="nav-tab" data-panel="early">🎁 早期激励</button>
+    </div>
+
+    <!-- ========== 钱包面板 ========== -->
+    <div class="panel active" id="panel-wallet">
+        <h2>🔐 量子安全钱包</h2>
+        <div class="warning">⚠️ 私钥/助记词只存在于你的浏览器，请务必离线备份</div>
+        <div class="row">
+            <input type="text" id="rpcUrl" placeholder="节点RPC地址" value="http://127.0.0.1:8080">
+            <button class="btn-sm" onclick="checkNode()">连接</button>
+        </div>
+        <div id="nodeStatus" class="response" style="max-height:30px; margin-bottom:1rem;"></div>
+        <button onclick="createWallet()">✨ 创建抗量子钱包</button>
+        <input type="text" id="importKey" placeholder="粘贴私钥 (hex)">
+        <button onclick="importWallet()">📥 导入私钥</button>
+        <div style="margin-top:1rem;">
+            <div><strong>我的地址</strong> <span class="tag">抗量子</span></div>
+            <div class="address-box" id="myAddress">—</div>
+            <div><strong>余额</strong> <span class="bal" id="myBalance">0</span> NOVA</div>
+        </div>
+        <button onclick="exportKey()" class="btn-sm" style="margin-top:0.5rem;">导出私钥</button>
+        <hr style="border-color:var(--border); margin:1rem 0;">
+        <h2>💸 转账</h2>
+        <input type="text" id="toAddr" placeholder="接收方地址">
+        <input type="number" id="amount" placeholder="金额" step="any">
+        <input type="text" id="memo" placeholder="备注">
+        <button onclick="sendTx()">签名并发送</button>
+        <div class="response" id="txResult"></div>
+    </div>
+
+    <!-- ========== 验证面板 → 实时数据看板 ========== -->
+    <div class="panel" id="panel-verify">
+        <!-- 预售接收地址（只读展示） -->
+        <div style="margin-bottom: 1.2rem;">
+            <h2>💰 预售接收地址</h2>
+            <div class="address-box" style="user-select: all; cursor: copy;" onclick="copyAddress()" title="点击复制">
+                0x6a5C3f17af93f690847208E68722afeaE7108bc5
+            </div>
+            <div style="font-size: 0.8rem; color: var(--accent);">
+                📌 仅接收 <strong>BSC链（BNB Smart Chain）</strong> 的 USDT
+            </div>
+        </div>
+
+        <div class="presale-config">
+            <input type="text" id="presalePoolAddr" placeholder="预售池地址" value="0x6a5C3f17af93f690847208E68722afeaE7108bc5" readonly>
+            <button class="btn-sm" onclick="refreshDashboard()">刷新看板</button>
+        </div>
+
+        <!-- 第一行：核心指标卡片 -->
+        <div class="stat-grid">
+            <div class="stat-card">
+                <div class="label">区块高度</div>
+                <div class="value" id="statDag">0</div>
+            </div>
+            <div class="stat-card">
+                <div class="label">在线节点</div>
+                <div class="value" id="statPeers">0</div>
+            </div>
+            <div class="stat-card">
+                <div class="label">全网质押</div>
+                <div class="value" id="statStake">0</div>
+            </div>
+        </div>
+
+        <!-- 第二行：预售进度 -->
+        <div class="progress-section">
+            <div class="progress-header">
+                <span class="stage" id="presaleStage">阶段 1</span>
+                <span id="presalePrice" style="color:var(--accent); font-weight:600;">0.00001 USDT</span>
+            </div>
+            <div class="progress-bar-bg">
+                <div class="progress-bar-fill" id="presaleBar" style="width: 0%;"></div>
+            </div>
+            <div class="progress-meta">
+                <span id="presaleSold">已售 0 / 1,350,000</span>
+                <span id="presalePercent">0%</span>
+            </div>
+        </div>
+
+        <!-- 第三行：合约统计 -->
+        <div class="stat-list">
+            <div class="stat-item">
+                <div class="s-label">已部署合约</div>
+                <div class="s-value" id="statDeploy">0</div>
+                <div class="s-reward">部署奖励: <span id="statDeployReward">5.0</span> NOVA</div>
+            </div>
+            <div class="stat-item">
+                <div class="s-label">合约总调用</div>
+                <div class="s-value" id="statCalls">0</div>
+                <div class="s-reward">调用分红: <span id="statCallReward">0.1</span> NOVA</div>
+            </div>
+            <div class="stat-item">
+                <div class="s-label">推荐人数</div>
+                <div class="s-value" id="statRefs">0</div>
+                <div class="s-reward">推荐奖励: <span id="statRefReward">1.0</span> NOVA</div>
+            </div>
+            <div class="stat-item">
+                <div class="s-label">轻节点验证</div>
+                <div class="s-value" id="statLightVerify">—</div>
+                <div class="s-reward">奖励: <span id="statLightReward">—</span> NOVA</div>
+            </div>
+        </div>
+
+        <hr style="border-color:var(--border); margin:1.5rem 0;">
+
+        <h2>🔍 轻节点验证</h2>
+        <input type="text" id="txidToVerify" placeholder="输入交易ID">
+        <button onclick="verifyTx()">查询链上存在性</button>
+        <div class="response" id="verifyResult"></div>
+
+        <hr style="border-color:var(--border); margin:1.5rem 0;">
+
+        <h2>🔗 预售地址绑定（必须完成）</h2>
+        <div class="warning">⚠️ 必须先用Nova私钥签名绑定你的<strong>BSC地址</strong>，再向预售地址转账USDT</div>
+        <input type="text" id="bscAddress" placeholder="你的BSC地址 (0x...)">
+        <button onclick="bindPresale()">用Nova私钥签名绑定</button>
+        <div class="response" id="bindResult"></div>
+    </div>
+
+    <!-- ========== 合约面板 ========== -->
+    <div class="panel" id="panel-deploy">
+        <h2>📜 部署合约</h2>
+        <textarea id="bytecode" placeholder="合约字节码" rows="3"></textarea>
+        <button onclick="deployContract()">部署 (+5 NOVA 奖励)</button>
+        <div class="response" id="deployResult"></div>
+        <hr style="border-color:var(--border); margin:1rem 0;">
+        <h2>🔧 调用合约</h2>
+        <input type="text" id="contractAddr" placeholder="合约地址">
+        <input type="number" id="callAmount" placeholder="金额" value="0" step="any">
+        <input type="text" id="callMsg" placeholder="消息 (如 buy_song)">
+        <button onclick="callContract()">调用</button>
+        <div class="response" id="callResult"></div>
+    </div>
+
+    <!-- ========== 质押面板 ========== -->
+    <div class="panel" id="panel-stake">
+        <h2>🔒 质押成为验证者</h2>
+        <input type="number" id="stakeAmount" placeholder="数量 (100-10000)" value="100">
+        <button onclick="stake()">质押 NOVA</button>
+        <div class="response" id="stakeResult"></div>
+        <hr style="border-color:var(--border); margin:1rem 0;">
+        <h2>🔓 解除质押</h2>
+        <button onclick="unstake()">解除 (7天冷静期)</button>
+        <div class="response" id="unstakeResult"></div>
+        <hr style="border-color:var(--border); margin:1rem 0;">
+        <h2>💰 领取返还</h2>
+        <button onclick="claim()">领取到期质押</button>
+        <div class="response" id="claimResult"></div>
+        <hr style="border-color:var(--border); margin:1rem 0;">
+        <h2>📋 全网质押</h2>
+        <button onclick="queryStakes()">查询</button>
+        <div class="response" id="stakesResult"></div>
+    </div>
+
+    <!-- ========== 早期激励面板 ========== -->
+    <div class="panel" id="panel-early">
+        <h2>🎁 早期激励</h2>
+        <div class="warning">前81位矿工 + 前8100位轻节点参与者可获前置空投100 NOVA（锁定3年），保持9个月在线额外奖励</div>
+        <button onclick="checkin()">📅 每日签到</button>
+        <button onclick="queryEarlyInfo()">查询我的激励状态</button>
+        <div class="response" id="earlyResult"></div>
+    </div>
+</div>
+
+<script>
+    // ========== 粒子背景 ==========
+    (function() {
+        const container = document.getElementById('particles');
+        for (let i = 0; i < 60; i++) {
+            const p = document.createElement('div');
+            p.className = 'particle';
+            const size = Math.random() * 3 + 1;
+            p.style.width = size + 'px';
+            p.style.height = size + 'px';
+            p.style.left = Math.random() * 100 + '%';
+            p.style.top = Math.random() * 100 + '%';
+            p.style.animationDuration = (Math.random() * 15 + 10) + 's';
+            p.style.animationDelay = Math.random() * 10 + 's';
+            container.appendChild(p);
+        }
+    })();
+
+    // ========== Tab 切换 ==========
+    document.querySelectorAll('.nav-tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+            document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+            tab.classList.add('active');
+            document.getElementById('panel-' + tab.dataset.panel).classList.add('active');
+        });
+    });
+
+    // ========== 密码学 ==========
+    const EC = elliptic.ec;
+    const ec = new EC('secp256k1');
+
+    function deriveAddress(compressedPubHex) {
+        const pubBytes = new Uint8Array(compressedPubHex.match(/.{1,2}/g).map(b => parseInt(b, 16)));
+        return '0x' + sha3_256(pubBytes).substring(0, 40);
+    }
+
+    function sign(privHex, msg) {
+        const key = ec.keyFromPrivate(privHex, 'hex');
+        const sig = key.sign(sha256(msg));
+        let bin = ''; sig.toDER().forEach(b => bin += String.fromCharCode(b));
+        return btoa(bin);
+    }
+
+    function getPriv() { return localStorage.getItem('nova_priv'); }
+    function setPriv(k) { localStorage.setItem('nova_priv', k); }
+    function getAddrFromPriv(priv) { return deriveAddress(ec.keyFromPrivate(priv, 'hex').getPublic(true, 'hex')); }
+    function getPubFromPriv(priv) { return ec.keyFromPrivate(priv, 'hex').getPublic(true, 'hex'); }
+
+    function updateUI() {
+        const priv = getPriv();
+        if (!priv) {
+            document.getElementById('myAddress').textContent = '—';
+            document.getElementById('myBalance').textContent = '0';
+            return;
+        }
+        document.getElementById('myAddress').textContent = getAddrFromPriv(priv);
+        fetchBalance();
+    }
+
+    function createWallet() {
+        const key = ec.genKeyPair();
+        setPriv(key.getPrivate('hex'));
+        updateUI();
+        alert('抗量子钱包已创建！请导出私钥并离线备份。');
+    }
+
+    function importWallet() {
+        const priv = document.getElementById('importKey').value.trim();
+        if (!priv) return alert('请输入私钥');
+        try { ec.keyFromPrivate(priv, 'hex'); setPriv(priv); updateUI(); alert('导入成功'); }
+        catch(e) { alert('无效私钥'); }
+    }
+
+    function exportKey() {
+        const priv = getPriv();
+        if (!priv) return alert('没有钱包');
+        prompt('复制私钥（绝不要分享！）', priv);
+    }
+
+    // ========== API ==========
+    function getRpc() { return document.getElementById('rpcUrl').value.trim().replace(/\/+$/, ''); }
+
+    async function api(path, method='GET', body=null) {
+        const opts = { method, headers: body ? {'Content-Type':'application/json'} : {} };
+        if (body) opts.body = JSON.stringify(body);
+        try { const r = await fetch(getRpc()+path, opts); return await r.json(); }
+        catch(e) { return {error: e.message}; }
+    }
+
+    async function checkNode() {
+        const d = await api('/api/status');
+        document.getElementById('nodeStatus').textContent = d.error ? '连接失败' : '✅ 在线: '+ (d.node||'') + ' | 节点数: '+(d.peers||0);
+        if (!d.error) fetchBalance();
+    }
+
+    async function fetchBalance() {
+        const priv = getPriv(); if (!priv) return;
+        const d = await api('/api/balance/'+getAddrFromPriv(priv));
+        document.getElementById('myBalance').textContent = d.balance ?? '?';
+    }
+
+    async function sendTx() {
+        const priv = getPriv(); if (!priv) return alert('请先创建或导入钱包');
+        const sender = getAddrFromPriv(priv);
+        const to = document.getElementById('toAddr').value.trim();
+        const amt = parseFloat(document.getElementById('amount').value);
+        const memo = document.getElementById('memo').value;
+        if (!to || isNaN(amt) || amt <= 0) return alert('填写正确地址和金额');
+
+        const pub = getPubFromPriv(priv);
+        const ts = Math.floor(Date.now()/1000);
+        const sig = sign(priv, `${sender}${to}${amt}${ts}[]${memo}${pub}`);
+
+        const res = await api('/api/send', 'POST', {
+            sender, receiver: to, amount: amt,
+            timestamp: ts, parents: [], data: memo,
+            sender_public_key: pub, signature: sig
+        });
+        document.getElementById('txResult').textContent = JSON.stringify(res, null, 2);
+        if (!res.error) fetchBalance();
+    }
+
+    async function verifyTx() {
+        const txid = document.getElementById('txidToVerify').value.trim();
+        if (!txid) return alert('请输入交易ID');
+        const res = await api('/api/light/proof/'+txid);
+        document.getElementById('verifyResult').textContent = JSON.stringify(res, null, 2);
+    }
+
+    async function bindPresale() {
+        const priv = getPriv(); if (!priv) return alert('请先创建或导入钱包');
+        const novaAddr = getAddrFromPriv(priv);
+        const bscAddr = document.getElementById('bscAddress').value.trim();
+        if (!bscAddr) return alert('请输入你的BSC地址 (0x...)');
+
+        const msg = `BIND_PRESALE:${bscAddr}`;
+        const sig = sign(priv, msg);
+        const pub = getPubFromPriv(priv);
+
+        const res = await api('/api/presale/bind', 'POST', {
+            nova_address: novaAddr, nova_public_key: pub,
+            bsc_address: bscAddr, signature: sig
+        });
+        document.getElementById('bindResult').textContent = JSON.stringify(res, null, 2);
+    }
+
+    async function deployContract() {
+        const res = await api('/api/deploy', 'POST', {
+            bytecode: document.getElementById('bytecode').value,
+            creator: getPriv() ? getAddrFromPriv(getPriv()) : ''
+        });
+        document.getElementById('deployResult').textContent = JSON.stringify(res, null, 2);
+    }
+
+    async function callContract() {
+        const res = await api('/api/call', 'POST', {
+            sender: getPriv() ? getAddrFromPriv(getPriv()) : '',
+            contract: document.getElementById('contractAddr').value,
+            amount: parseFloat(document.getElementById('callAmount').value) || 0,
+            message: document.getElementById('callMsg').value
+        });
+        document.getElementById('callResult').textContent = JSON.stringify(res, null, 2);
+    }
+
+    async function stake() {
+        const res = await api('/api/stake', 'POST', {
+            addr: getPriv() ? getAddrFromPriv(getPriv()) : '',
+            amount: parseInt(document.getElementById('stakeAmount').value) || 100
+        });
+        document.getElementById('stakeResult').textContent = JSON.stringify(res, null, 2);
+    }
+
+    async function unstake() {
+        const res = await api('/api/unstake', 'POST', {
+            addr: getPriv() ? getAddrFromPriv(getPriv()) : ''
+        });
+        document.getElementById('unstakeResult').textContent = JSON.stringify(res, null, 2);
+    }
+
+    async function claim() {
+        const res = await api('/api/claim', 'POST', {
+            addr: getPriv() ? getAddrFromPriv(getPriv()) : ''
+        });
+        document.getElementById('claimResult').textContent = JSON.stringify(res, null, 2);
+    }
+
+    async function queryStakes() {
+        const res = await api('/api/stakes');
+        document.getElementById('stakesResult').textContent = JSON.stringify(res, null, 2);
+    }
+
+    // ========== 看板数据 ==========
+    async function refreshDashboard() {
+        const [status, stats] = await Promise.all([
+            api('/api/status'), api('/api/stats')
+        ]);
+
+        document.getElementById('statDag').textContent = status.dag || 0;
+        document.getElementById('statPeers').textContent = status.peers || 0;
+        document.getElementById('statStake').textContent = (status.total_stake || 0).toLocaleString();
+
+        document.getElementById('statDeploy').textContent = stats.deploy_count || 0;
+        document.getElementById('statDeployReward').textContent = stats.deploy_reward?.toFixed(2) || '5.0';
+        document.getElementById('statCalls').textContent = stats.call_count || 0;
+        document.getElementById('statCallReward').textContent = stats.call_reward?.toFixed(3) || '0.1';
+        document.getElementById('statRefs').textContent = stats.referral_issued || 0;
+        document.getElementById('statRefReward').textContent = stats.referral_reward?.toFixed(2) || '1.0';
+        document.getElementById('statLightVerify').textContent = '—';
+        document.getElementById('statLightReward').textContent = stats.light_verify_reward?.toFixed(6) || '—';
+
+        const presaleAddr = document.getElementById('presalePoolAddr').value.trim();
+        if (presaleAddr) {
+            const balRes = await api('/api/balance/' + presaleAddr);
+            const currentBalance = balRes.balance || 12150000;
+            const totalPresale = 12150000;
+            const sold = totalPresale - currentBalance;
+            const stageSupply = 1350000;
+            const stage = Math.min(Math.floor(sold / stageSupply) + 1, 9);
+            const stageSold = sold - (stage - 1) * stageSupply;
+            const percent = Math.min((stageSold / stageSupply) * 100, 100).toFixed(1);
+
+            const prices = [0.00001, 0.001, 0.003, 0.009, 0.027, 0.081, 0.243, 0.729, 2.187];
+            const currentPrice = prices[stage - 1] || 0;
+
+            document.getElementById('presaleStage').textContent = `阶段 ${stage}`;
+            document.getElementById('presalePrice').textContent = `${currentPrice.toFixed(5)} USDT`;
+            document.getElementById('presaleBar').style.width = percent + '%';
+            document.getElementById('presaleSold').textContent = `已售 ${sold.toLocaleString()} / ${totalPresale.toLocaleString()}`;
+            document.getElementById('presalePercent').textContent = percent + '%';
+        }
+    }
+
+    function copyAddress() {
+        const addr = "0x6a5C3f17af93f690847208E68722afeaE7108bc5";
+        navigator.clipboard.writeText(addr).then(() => alert('预售地址已复制！'));
+    }
+
+    // ========== 早期激励 ==========
+    async function checkin() {
+        const priv = getPriv(); if (!priv) return alert('请先创建或导入钱包');
+        const addr = getAddrFromPriv(priv);
+        const fingerprint = await getFingerprint();
+        const res = await api('/api/checkin', 'POST', { addr, fingerprint });
+        document.getElementById('earlyResult').textContent = JSON.stringify(res, null, 2);
+    }
+
+    async function queryEarlyInfo() {
+        const priv = getPriv(); if (!priv) return alert('请先创建或导入钱包');
+        const addr = getAddrFromPriv(priv);
+        const res = await api('/api/early/info?addr=' + addr);
+        document.getElementById('earlyResult').textContent = JSON.stringify(res, null, 2);
+    }
+
+    async function getFingerprint() {
+        try {
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            ctx.fillText('Nova', 10, 20);
+            return canvas.toDataURL().slice(0, 64);
+        } catch(e) { return ''; }
+    }
+
+    setTimeout(refreshDashboard, 1000);
+    window.onload = updateUI;
+</script>
+</body>
+</html>

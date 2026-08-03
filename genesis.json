@@ -1,0 +1,13 @@
+{
+  "genesis": {
+    "chain": "Nova",
+    "message": "Nova——超新星并行宇宙，抗量子创作者公链",
+    "alloc": {
+      "0xf0ebe17cdd728c906619767c62b145d93a33f6ac": 12150000,
+      "0xf6b61deb5615507c574a2a75071ded2a9c227516": 20250000,
+      "0xa44e68e1df428c2d70e78833a93a611814e20e0d": 8100000,
+      "0x3de5bac36bb5df492a802dd4b4dee21f860f9032": 28350000,
+      "0xa53b5b083f5748434d278f7fb2e1cf6c812f19dc": 12150000
+    }
+  }
+}
