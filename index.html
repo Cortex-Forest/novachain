@@ -213,9 +213,112 @@
     .card h3 { margin-bottom: 8px; color: var(--accent); }
     .card p { color: var(--dim); line-height: 1.65; }
 
+    .section {
+      margin-top: 24px;
+      padding: 24px;
+      border-radius: 24px;
+      background: linear-gradient(135deg, rgba(7, 10, 20, 0.96), rgba(15, 21, 37, 0.92));
+      border: 1px solid var(--border);
+      box-shadow: 0 16px 38px rgba(0,0,0,0.2);
+    }
+
+    .section-title {
+      font-size: 1.35rem;
+      font-weight: 800;
+      margin-bottom: 14px;
+      color: var(--accent);
+    }
+
+    .timeline {
+      display: grid;
+      gap: 12px;
+      margin-top: 12px;
+    }
+
+    .timeline-item {
+      display: grid;
+      grid-template-columns: 90px 1fr;
+      gap: 12px;
+      padding: 12px 14px;
+      border-radius: 14px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.06);
+    }
+
+    .timeline-item .phase {
+      color: var(--accent);
+      font-weight: 800;
+      font-size: 0.9rem;
+    }
+
+    .team-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 14px;
+      margin-top: 12px;
+    }
+
+    .member {
+      padding: 16px;
+      border-radius: 16px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.06);
+    }
+
+    .member .name {
+      font-weight: 700;
+      color: var(--text);
+      margin-bottom: 6px;
+    }
+
+    .member .role {
+      color: var(--accent);
+      font-size: 0.85rem;
+      margin-bottom: 8px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+    }
+
+    .member p {
+      color: var(--dim);
+      line-height: 1.6;
+      font-size: 0.94rem;
+    }
+
+    .cta-block {
+      margin-top: 24px;
+      padding: 24px;
+      border-radius: 24px;
+      border: 1px solid var(--border);
+      background: linear-gradient(135deg, rgba(0,240,255,0.13), rgba(180,77,255,0.12));
+      text-align: center;
+    }
+
+    .cta-block h3 {
+      font-size: 1.4rem;
+      margin-bottom: 10px;
+      color: var(--text);
+    }
+
+    .cta-block p {
+      color: var(--dim);
+      line-height: 1.7;
+      margin-bottom: 16px;
+    }
+
+    .floating-card {
+      animation: float 4s ease-in-out infinite;
+    }
+
+    @keyframes float {
+      0%, 100% { transform: translateY(0px); }
+      50% { transform: translateY(-6px); }
+    }
+
     @media (max-width: 900px) {
       .hero-card { grid-template-columns: 1fr; }
       .capabilities { grid-template-columns: 1fr; }
+      .team-grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -260,6 +363,54 @@
       <div class="card">
         <h3>🔮 未来可扩展</h3>
         <p>为后续接入真实共识、钱包签名、链下预售与跨链验证预留了完整入口。</p>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-title">🗺️ 路线图</div>
+      <div class="timeline">
+        <div class="timeline-item">
+          <div class="phase">Q3</div>
+          <div>完成钱包、质押、合约和轻节点验证的基础交互闭环，并开放静态演示入口。</div>
+        </div>
+        <div class="timeline-item">
+          <div class="phase">Q4</div>
+          <div>接入真实共识与更完整的经济模型，让节点模式从演示迈向可运行网络。</div>
+        </div>
+        <div class="timeline-item">
+          <div class="phase">Q1</div>
+          <div>扩展跨链治理、创作者身份与可组合资产层，打造抗量子公链的基础设施平台。</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-title">👥 团队介绍</div>
+      <div class="team-grid">
+        <div class="member">
+          <div class="name">Nova Labs</div>
+          <div class="role">Protocol</div>
+          <p>专注于抗量子密码学、共识设计与可扩展链上经济模型。</p>
+        </div>
+        <div class="member">
+          <div class="name">Creator Collective</div>
+          <div class="role">Community</div>
+          <p>连接内容创作者、开发者与社区参与者，形成创作者驱动的生态增长。</p>
+        </div>
+        <div class="member">
+          <div class="name">Open Frontier</div>
+          <div class="role">Research</div>
+          <p>推动可验证计算、轻节点和跨链互操作能力，为下一代链上应用打基础。</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="cta-block floating-card">
+      <h3>准备好进入 Nova 生态了吗？</h3>
+      <p>立即体验钱包、质押与合约入口，或者从演示模式开始熟悉产品体验。</p>
+      <div class="hero-actions" style="justify-content:center; margin-bottom:0;">
+        <a class="btn primary" id="launchBtn" href="./nova.html">进入体验</a>
+        <a class="btn secondary" href="./nova.html?mode=demo">查看演示模式</a>
       </div>
     </section>
   </main>
