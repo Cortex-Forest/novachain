@@ -27,6 +27,7 @@ def setup_routes(app, node):
     app.router.add_post('/api/stake', node.rpc_stake)
     app.router.add_post('/api/unstake', node.rpc_unstake)
     app.router.add_post('/api/claim', node.rpc_claim)
+    app.router.add_post('/api/unlock', node.rpc_unlock)
     app.router.add_get('/api/stakes', node.rpc_stakes)
     app.router.add_post('/api/referral', node.rpc_referral)
     app.router.add_post('/api/light/verify', node.rpc_light_verify)

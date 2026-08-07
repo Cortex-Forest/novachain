@@ -47,6 +47,20 @@ class SecurityManager:
     def check_device_unique(self, fingerprint: str) -> bool:
         return fingerprint not in self.device_fingerprints
 
+
+    def snapshot(self):
+        return {
+            "processed_txids": sorted(self.processed_txids),
+            "ip_registry": self.ip_registry,
+            "device_fingerprints": self.device_fingerprints,
+            "checkin_history": self.checkin_history,
+        }
+
+    def restore(self, d):
+        self.processed_txids = set(d.get("processed_txids", []))
+        self.ip_registry = {k: dict(v) for k, v in d.get("ip_registry", {}).items()}
+        self.device_fingerprints = dict(d.get("device_fingerprints", {}))
+        self.checkin_history = {k: list(v) for k, v in d.get("checkin_history", {}).items()}
     def check_checkin_interval(self, addr: str) -> bool:
         if addr not in self.checkin_history or not self.checkin_history[addr]:
             return True

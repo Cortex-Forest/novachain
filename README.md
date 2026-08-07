@@ -4,7 +4,8 @@
 8100 万 NOVA，零团队预留，全人类共有。
 
 ## 安装依赖
-pip install oqs aiohttp pyopenssl
+pip install -r requirements.txt   # 核心依赖（含 pyOpenSSL）
+pip install oqs                    # 生产必装：启用 CRYSTALS-Dilithium5 抗量子签名
 
 ## 生成 TLS 证书
 python cert_gen.py
@@ -14,6 +15,7 @@ python run_network.py
 
 ## 生产启动（启用 TLS）
 python nova_node.py --host 0.0.0.0 --p2p 9000 --rpc 8080
+python nova_node.py --host 0.0.0.0 --p2p 9000 --rpc 8080 --consensus pos --validator-key <hex>
 
 ## 生成抗量子钱包
 python -c "from core.crypto import QuantumWallet; w = QuantumWallet(); print('地址:', w.address); print('私钥:', w.private_key_hex())"
@@ -54,3 +56,41 @@ python -c "from core.crypto import QuantumWallet; w = QuantumWallet(); print('�
 - 必须先通过网页绑定 Nova 地址与 BSC 地址
 
 ## 文件结构
+
+
+## 安全说明（重要）
+- 未安装 oqs 时，签名自动回退为 Ed25519（RFC 8032，Python 与浏览器 WebCrypto 实现）。Ed25519 **不是**抗量子算法；生产环境必须安装 oqs（pip install oqs）以启用 CRYSTALS-Dilithium5。节点 /api/status 会如实返回当前算法与 quantum_safe 状态。
+- 交易签名基于规范化字符串：sender + receiver + 金额（8 位小数去尾零）+ 时间戳 + parents + data + 公钥。时间戳由客户端提供，节点校验 ±5 分钟窗口，缺失/过期时间戳的交易会被拒绝。
+- 金额必须为正数（合约调用可为 0）且不超过总供应量 8100 万 NOVA，字符串、NaN、Infinity 等非法金额一律拒绝。
+
+## 状态持久化
+节点默认把余额、DAG、质押、签到、重放保护等状态保存到 `chain_state.json`（每 60 秒自动保存 + 退出时保存）。
+启动参数：`--state` 指定快照文件（传空字符串禁用持久化）。
+测试网络：`python run_network.py`（三个节点分别使用 state_seed.json / state_node1.json / state_node2.json）。
+
+## 共识与同步（v0.3）
+- 区块：每 60 秒（可通过 NovaNode(block_interval=...) 调整）将未封装的交易打包为区块，形成哈希链；区块随 P2P 广播，节点校验 prev_hash/高度后采用。
+- 状态同步：P2P 握手交换区块高度，落后节点自动向对端请求全量状态快照并恢复（余额/DAG/质押/签到/链）。
+- 奖励上限：轻节点验证奖励同一交易只能领一次、同一地址每日一次；合约调用奖励按（发送方, 合约）每日一次。
+- 解锁与维护：POST /api/unlock 领取到期锁仓空投；节点每日自动维护（矿工在线时长累计、9 个月达标、早期激励发放且不重复发放）。
+
+## 共识 v0.4：PoS 出块权与区块签名
+- 双模式：`--consensus pos|checkpoint`（默认 checkpoint 保持旧行为；pos 为质押加权出块 + 区块签名验证）。
+- 出块权：以 `prev_hash + height` 为确定性种子，按有效质押（stake 100-10000 NOVA，封顶 10000）加权抽签；
+  每个 epoch（`--epoch-len`，默认 10800 块 ≈ 7.5 天）边界重建质押快照，节点状态一致时选举结果一致。
+- 区块签名：当选出块者用验证者私钥对区块哈希签名，其他节点校验签名与出块权；
+  非当选且未超时的区块一律拒绝（bootstrap 期除外）。
+- 活性兜底：当选者离线超过 2 个出块周期时，任意有质押的节点可补块；全网无质押时进入 bootstrap，
+  任何持有验证者密钥的节点均可出块（仍需签名）。
+- 质押即交易：stake/unstake/claim 已改为签名交易（data=`nova:stake` 等），经区块封存后全网确定性同步；
+  前端质押/解押/领取会自动构造并签名交易（旧的无签名 /api/stake 请求将被拒绝）。
+- 质押上限：单地址累计质押不超过 10000 NOVA；全网质押总量不超过供应量的 30%（24,300,000 NOVA）。
+- 解押上限：支持部分解押（须指定金额，0 不再表示全部）；冷却中的质押总量不超过当前质押的 25%，
+  配合 7 天冷静期实现渐进退出，防止大额瞬间抽逃。
+- 惩罚机制：
+  - 出块超时：当选者超过 2 个出块周期未出块，被补块后按 1% 质押惩罚（最低 1 NOVA），并禁用出块权 1 个 epoch
+    （该惩罚随链确定性生效，全网一致）。
+  - 双签：同一出块者对同一高度签署两个不同区块，按 5% 质押惩罚并禁用出块权 1 个 epoch
+    （本地尽力而为检测，状态随快照同步）。
+  - 被惩罚地址在下一 epoch 的质押快照重建时被排除，jail 到期后自动恢复。
+- 集成测试：`python test_pos_network.py`（3 节点：质押收敛 / 每轮唯一当选者出块 / 状态全一致）。

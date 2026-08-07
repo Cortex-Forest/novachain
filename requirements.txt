@@ -1,0 +1,15 @@
+# Nova Chain 核心运行依赖（已在本机 pip freeze 验证的锁版本）
+aiohttp==3.14.3
+aiosignal==1.4.0
+attrs==26.1.0
+frozenlist==1.8.0
+idna==3.18
+multidict==6.7.1
+yarl==1.24.5
+
+# TLS 证书生成（cert_gen.py 依赖）
+pyOpenSSL==26.4.0
+
+# 抗量子签名（生产必装；未安装时自动回退 Ed25519）
+# 本机未安装 oqs，无法锁定版本；安装后请按 `pip freeze` 补全：
+# oqs==<version>

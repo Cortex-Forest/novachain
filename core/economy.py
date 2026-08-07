@@ -1,6 +1,7 @@
 import time
 
 class Economy:
+    TOTAL_SUPPLY = 81000000
     GENESIS_TIME = 1756569600
     INIT_REWARD = 0.5
     HALVING = 9 * 30 * 24 * 3600
@@ -8,6 +9,11 @@ class Economy:
     FIXED_GAS = 0.000001
     MIN_STAKE = 100
     MAX_STAKE = 10000
+    MAX_TOTAL_STAKE = int(TOTAL_SUPPLY * 0.30)   # 全网质押上限（30% 供应量）
+    MAX_UNBONDING_RATIO = 0.25                   # 解押上限：冷却中总量 <= 当前质押的 25%
+    INACTIVITY_SLASH_RATIO = 0.01                # 出块超时惩罚：1% 质押（最低 1 NOVA）
+    EQUIVOCATION_SLASH_RATIO = 0.05              # 双签惩罚：5% 质押
+    JAIL_EPOCHS = 1                              # 惩罚后禁用出块权 N 个 epoch
     UNBOND = 7 * 86400
 
     INIT_DEPLOY_REWARD = 5
@@ -109,11 +115,17 @@ class Economy:
         if time.time() < self.RELEASE_TIME:
             return
         for addr in list(self.store.miner_qualified):
+            if addr in self.store.early_rewards_paid:
+                continue
             if self.store.balances.get(self.ECOSYSTEM_FUND, 0) >= self.EARLY_MINER_REWARD:
                 self.store.balances[self.ECOSYSTEM_FUND] -= self.EARLY_MINER_REWARD
                 self.store.balances[addr] = self.store.balances.get(addr, 0) + self.EARLY_MINER_REWARD
+                self.store.early_rewards_paid.add(addr)
         for addr in list(self.store.light_qualified):
+            if addr in self.store.early_rewards_paid:
+                continue
             if self.store.balances.get(self.ECOSYSTEM_FUND, 0) >= self.EARLY_LIGHT_REWARD:
                 self.store.balances[self.ECOSYSTEM_FUND] -= self.EARLY_LIGHT_REWARD
                 self.store.balances[addr] = self.store.balances.get(addr, 0) + self.EARLY_LIGHT_REWARD
+                self.store.early_rewards_paid.add(addr)
         print(f"[REWARD] 早期激励已发放")

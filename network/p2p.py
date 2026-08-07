@@ -1,4 +1,7 @@
-import asyncio, json, ssl
+﻿import asyncio
+import json
+import ssl
+
 
 class P2PNetwork:
     def __init__(self, node, host, port, use_tls, cert_file, key_file):
@@ -9,11 +12,22 @@ class P2PNetwork:
         self.cert_file = cert_file
         self.key_file = key_file
         self.server = None
+        self.connections = set()
 
     def _create_ssl_context(self):
-        if not self.use_tls: return None
+        if not self.use_tls:
+            return None
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.load_cert_chain(self.cert_file, self.key_file)
+        return ctx
+
+    def _create_client_ssl_context(self):
+        """出站连接的 TLS 客户端上下文（自签名证书，生产环境应改为固定证书校验）。"""
+        if not self.use_tls:
+            return None
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
         return ctx
 
     async def start_server(self):
@@ -29,43 +43,78 @@ class P2PNetwork:
             if data:
                 msg = json.loads(data.decode())
                 if msg.get("type") == "hello":
-                    peer = msg["node_id"]
-                    self.node.peers.add(peer)
-                    writer.write(json.dumps({"type":"hello","node_id":self.node.node_id}).encode())
+                    peer = msg.get("node_id")
+                    if peer:
+                        self.node.peers.add(peer)
+                    writer.write(json.dumps({
+                        "type": "hello",
+                        "node_id": self.node.node_id,
+                        "height": self.node.consensus.chain_height(),
+                        "dag_count": len(self.node.dag),
+                    }).encode())
                     await writer.drain()
-                    asyncio.create_task(self._listen(reader, peer))
+                    self.connections.add(writer)
+                    asyncio.create_task(self._listen(reader, peer, writer))
                 else:
-                    await self.node.process_message(msg, peer)
-        except: pass
+                    await self.node.process_message(msg, peer, writer)
+        except Exception:
+            pass
 
     async def connect_to_peer(self, addr):
         try:
             h, p = addr.split(":")
-            r, w = await asyncio.open_connection(h, int(p))
-            w.write(json.dumps({"type":"hello","node_id":self.node.node_id}).encode())
+            r, w = await asyncio.open_connection(h, int(p), ssl=self._create_client_ssl_context())
+            w.write(json.dumps({
+                "type": "hello",
+                "node_id": self.node.node_id,
+                "height": self.node.consensus.chain_height(),
+                "dag_count": len(self.node.dag),
+            }).encode())
             await w.drain()
+            self.connections.add(w)
             self.node.peers.add(addr)
-            asyncio.create_task(self._listen(r, addr))
-        except: pass
+            asyncio.create_task(self._listen(r, addr, w))
+        except Exception:
+            pass
 
-    async def _listen(self, reader, peer):
+    async def _listen(self, reader, peer, writer):
         try:
             while True:
                 data = await reader.read(16384)
-                if not data: break
-                await self.node.process_message(json.loads(data.decode()), peer)
-        except: pass
+                if not data:
+                    break
+                await self.node.process_message(json.loads(data.decode()), peer, writer)
+        except Exception:
+            pass
         finally:
-            if peer in self.node.peers: self.node.peers.remove(peer)
+            self.connections.discard(writer)
+            try:
+                writer.close()
+            except Exception:
+                pass
+            if peer in self.node.peers:
+                self.node.peers.remove(peer)
+
+    def close_all(self):
+        for w in list(self.connections):
+            try:
+                w.close()
+            except Exception:
+                pass
+        self.connections.clear()
+        if self.server:
+            self.server.close()
 
     async def gossip(self, msg, exclude=None):
         exclude = exclude or []
         for p in list(self.node.peers):
-            if p in exclude: continue
+            if p in exclude:
+                continue
             try:
                 h, port = p.split(":")
-                _, w = await asyncio.open_connection(h, int(port))
+                _, w = await asyncio.open_connection(h, int(port), ssl=self._create_client_ssl_context())
                 w.write(json.dumps(msg).encode())
                 await w.drain()
                 w.close()
-            except: pass
+            except Exception:
+                pass

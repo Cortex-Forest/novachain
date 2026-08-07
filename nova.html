@@ -1,366 +1,340 @@
-<!DOCTYPE html>
+﻿﻿<!DOCTYPE html>
 <html lang="zh">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#030309">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' http://127.0.0.1:* http://localhost:* https: ws://127.0.0.1:* ws://localhost:* wss:; object-src 'none'; base-uri 'self'; form-action 'self'">
     <title>Nova Chain · 超新星并行宇宙</title>
-    <script src="https://cdn.jsdelivr.net/npm/js-sha3@0.8.0/build/sha3.min.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;800;900&family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/js-sha3@0.8.0/build/sha3.min.js" integrity="sha384-NKbaJKqJPrFeb86qfU2iNy4KO3oyIe6F5xm1PBYMpAkiVTxHjjafUKlebp0mAeNC" crossorigin="anonymous"></script>
     <style>
         :root {
-            --bg-deep: #050510;
-            --bg-card: rgba(18, 18, 26, 0.85);
-            --border: rgba(0, 240, 255, 0.2);
+            --bg-deep: #030309;
+            --bg-panel: rgba(13, 16, 36, 0.55);
+            --border: rgba(140, 210, 255, 0.14);
+            --border-strong: rgba(0, 240, 255, 0.4);
             --accent: #00f0ff;
             --accent2: #b44dff;
-            --text: #e0e0f0;
-            --dim: #7a7a9a;
+            --accent3: #ff2ea6;
+            --text: #eef2ff;
+            --dim: #8b93b8;
             --danger: #ff4d6a;
-            --radius: 16px;
-            --blur: blur(12px);
+            --radius: 18px;
+            --font-display: 'Orbitron', 'Segoe UI', system-ui, sans-serif;
+            --font-body: 'Space Grotesk', 'Segoe UI', system-ui, sans-serif;
+            --font-mono: 'JetBrains Mono', 'SF Mono', 'Consolas', monospace;
         }
         * { box-sizing: border-box; margin: 0; padding: 0; }
-
+        html { scroll-behavior: smooth; }
         body {
-            background: var(--bg-deep);
+            background-color: #030309;
+            background-image: radial-gradient(1400px 900px at 50% -12%, #0b0f26, var(--bg-deep) 62%);
             color: var(--text);
-            font-family: 'SF Pro Display', 'Segoe UI', system-ui, sans-serif;
+            font-family: var(--font-body);
             min-height: 100vh;
             overflow-x: hidden;
             position: relative;
         }
+        ::selection { background: rgba(0,240,255,.3); color: #fff; }
+        ::-webkit-scrollbar { width: 10px; height: 10px; }
+        ::-webkit-scrollbar-track { background: #05060f; }
+        ::-webkit-scrollbar-thumb { background: linear-gradient(180deg, rgba(0,240,255,.45), rgba(180,77,255,.45)); border-radius: 999px; border: 2px solid #05060f; }
 
-        /* ---- 粒子背景 ---- */
-        #particles {
-            position: fixed;
-            top: 0; left: 0; width: 100%; height: 100%;
-            pointer-events: none; z-index: 0;
+        /* ---- 极光背景 ---- */
+        #bg-aurora { position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; }
+        #bg-aurora::after { content:''; position: absolute; inset: 0; background: radial-gradient(ellipse 120% 90% at 50% 40%, transparent 55%, rgba(3,3,9,.9)); }
+        .orb { position: absolute; border-radius: 50%; filter: blur(110px); will-change: transform; opacity: .55; }
+        .orb-a { width: 62vmax; height: 62vmax; left: -20vmax; top: -24vmax; background: radial-gradient(circle, rgba(0,240,255,.42), transparent 60%); animation: driftA 26s ease-in-out infinite alternate; }
+        .orb-b { width: 56vmax; height: 56vmax; right: -22vmax; top: 4vmax; background: radial-gradient(circle, rgba(180,77,255,.38), transparent 60%); animation: driftB 32s ease-in-out infinite alternate; }
+        .orb-c { width: 50vmax; height: 50vmax; left: 26vw; bottom: -28vmax; background: radial-gradient(circle, rgba(255,46,166,.2), transparent 62%); animation: driftC 40s ease-in-out infinite alternate; }
+        @keyframes driftA { to { transform: translate(9vmax, 7vmax) scale(1.12); } }
+        @keyframes driftB { to { transform: translate(-8vmax, 10vmax) scale(1.16); } }
+        @keyframes driftC { to { transform: translate(6vmax, -9vmax) scale(1.1); } }
+
+        /* ---- 科技网格 ---- */
+        #bg-grid { position: fixed; inset: 0; z-index: 0; pointer-events: none; opacity: .55;
+            background-image: linear-gradient(rgba(120,200,255,.05) 1px, transparent 1px), linear-gradient(90deg, rgba(120,200,255,.05) 1px, transparent 1px);
+            background-size: 56px 56px;
+            -webkit-mask-image: radial-gradient(ellipse 95% 75% at 50% 28%, #000 25%, transparent 76%);
+            mask-image: radial-gradient(ellipse 95% 75% at 50% 28%, #000 25%, transparent 76%);
+            animation: gridPan 70s linear infinite;
         }
-        .particle {
-            position: absolute;
-            background: var(--accent);
-            border-radius: 50%;
-            opacity: 0.3;
-            animation: floatUp linear infinite;
-        }
+        @keyframes gridPan { to { background-position: 56px 56px; } }
+
+        /* ---- 星尘粒子（原功能保留） ---- */
+        #particles { position: fixed; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 0; }
+        .particle { position: absolute; background: #a8ddff; border-radius: 50%; opacity: .32; box-shadow: 0 0 6px rgba(168,221,255,.75); animation: floatUp linear infinite; }
         @keyframes floatUp {
             0% { transform: translateY(0) scale(1); opacity: 0; }
-            10% { opacity: 0.5; }
-            90% { opacity: 0.5; }
-            100% { transform: translateY(-100vh) scale(0); opacity: 0; }
+            10% { opacity: .4; }
+            90% { opacity: .4; }
+            100% { transform: translateY(-100vh) scale(.2); opacity: 0; }
         }
 
-        /* ---- 主容器 ---- */
-        .app-container {
-            position: relative; z-index: 1;
-            max-width: 900px; margin: 0 auto; padding: 1rem;
-            backdrop-filter: var(--blur);
-        }
+        /* ---- 交互粒子网络 ---- */
+        #network { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; }
 
+        /* ---- 鼠标聚光 ---- */
+        #spotlight { position: fixed; left: 0; top: 0; width: 620px; height: 620px; z-index: 2; pointer-events: none; border-radius: 50%;
+            background: radial-gradient(circle, rgba(0,240,255,.09), rgba(180,77,255,.045) 45%, transparent 70%);
+            mix-blend-mode: screen; will-change: transform; }
+
+        /* ---- HUD 边框 ---- */
+        .hud-corner { position: fixed; width: 44px; height: 44px; z-index: 2; pointer-events: none; opacity: .55; }
+        .hud-tl { top: 16px; left: 16px; border-top: 2px solid rgba(0,240,255,.55); border-left: 2px solid rgba(0,240,255,.55); border-top-left-radius: 12px; }
+        .hud-tr { top: 16px; right: 16px; border-top: 2px solid rgba(0,240,255,.55); border-right: 2px solid rgba(0,240,255,.55); border-top-right-radius: 12px; }
+        .hud-bl { bottom: 16px; left: 16px; border-bottom: 2px solid rgba(180,77,255,.55); border-left: 2px solid rgba(180,77,255,.55); border-bottom-left-radius: 12px; }
+        .hud-br { bottom: 16px; right: 16px; border-bottom: 2px solid rgba(180,77,255,.55); border-right: 2px solid rgba(180,77,255,.55); border-bottom-right-radius: 12px; }
+
+        .app-container { position: relative; z-index: 1; max-width: 920px; margin: 0 auto; padding: 1rem 1.25rem 3.5rem; }
         /* ---- 头部 ---- */
-        .header {
-            text-align: center; padding: 2rem 0 1rem;
-        }
-        .header .logo {
-            font-size: 3rem; font-weight: 800; letter-spacing: -2px;
-            background: linear-gradient(135deg, var(--accent), var(--accent2));
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-        }
-        .header .tagline {
-            color: var(--dim); font-size: 0.95rem; margin-top: 0.3rem;
-        }
+        .header { text-align: center; padding: 2.4rem 0 1.5rem; }
+        .core-ring { position: relative; width: 86px; height: 86px; margin: 0 auto 1.1rem; animation: ringIn .9s cubic-bezier(.22,1,.36,1) both; }
+        .core-ring::before { content:''; position: absolute; inset: 0; border-radius: 50%; border: 1.5px dashed rgba(0,240,255,.55); animation: spin 16s linear infinite; }
+        .core-ring::after { content:''; position: absolute; inset: 11px; border-radius: 50%; border: 1.5px solid rgba(180,77,255,.4); box-shadow: 0 0 26px rgba(180,77,255,.25) inset; animation: spinRev 10s linear infinite; }
+        .core-ring .core { position: absolute; inset: 29px; border-radius: 50%; background: radial-gradient(circle, var(--accent), var(--accent2)); box-shadow: 0 0 30px rgba(0,240,255,.85); animation: corePulse 3.2s ease-in-out infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        @keyframes spinRev { to { transform: rotate(-360deg); } }
+        @keyframes corePulse { 0%,100% { transform: scale(1); opacity: .9; } 50% { transform: scale(1.22); opacity: 1; } }
+        @keyframes ringIn { from { opacity: 0; transform: scale(.7) rotate(-40deg); } }
+
+        .kicker { font-family: var(--font-mono); font-size: .66rem; letter-spacing: .44em; text-transform: uppercase; color: var(--accent); opacity: .9; margin-bottom: .95rem; padding-left: .44em; text-shadow: 0 0 18px rgba(0,240,255,.65); animation: fadeDown .8s .15s both; }
+        @keyframes fadeDown { from { opacity: 0; transform: translateY(-12px); } }
+
+        .logo { position: relative; display: inline-block; font-family: var(--font-display); font-size: clamp(3.1rem, 10vw, 5rem); font-weight: 900; letter-spacing: .08em; line-height: 1.1;
+            background: linear-gradient(110deg, #7df9ff, var(--accent) 28%, var(--accent2) 66%, #ff9bf0);
+            -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; color: transparent;
+            filter: drop-shadow(0 0 28px rgba(0,240,255,.35));
+            animation: logoIn 1s .05s cubic-bezier(.22,1,.36,1) both; }
+        @keyframes logoIn { from { opacity: 0; transform: translateY(26px) scale(.94); filter: blur(12px); } }
+        .logo::after { content: attr(data-text); position: absolute; inset: 0;
+            background: linear-gradient(115deg, transparent 42%, rgba(255,255,255,.9) 50%, transparent 58%);
+            background-size: 250% 100%; background-position: 120% 0;
+            -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+            animation: sheen 3.4s ease-in-out infinite; }
+        @keyframes sheen { 0%, 55% { background-position: 130% 0; } 90%, 100% { background-position: -30% 0; } }
+
+        .tagline { color: var(--dim); font-size: .98rem; margin-top: .85rem; min-height: 1.5em; letter-spacing: .05em; animation: fadeDown .9s .35s both; }
+        .cursor { display: inline-block; width: 9px; height: 1.05em; background: var(--accent); vertical-align: text-bottom; margin-left: 3px; border-radius: 2px; box-shadow: 0 0 10px var(--accent); animation: blink 1s steps(2) infinite; }
+        @keyframes blink { 50% { opacity: 0; } }
+
+        .hero-badges { display: flex; gap: .6rem; justify-content: center; flex-wrap: wrap; margin-top: 1.35rem; }
+        .chip { font-size: .73rem; font-weight: 600; letter-spacing: .05em; padding: .34rem .95rem; border-radius: 999px; color: #cfe9ff; background: rgba(0,240,255,.07); border: 1px solid rgba(0,240,255,.28); box-shadow: inset 0 0 18px rgba(0,240,255,.1); animation: chipIn .6s cubic-bezier(.22,1,.36,1) both; }
+        .chip:nth-child(2) { animation-delay: .14s; }
+        .chip:nth-child(3) { animation-delay: .26s; }
+        .chip:nth-child(4) { animation-delay: .38s; }
+        @keyframes chipIn { from { opacity: 0; transform: translateY(12px) scale(.88); } }
+
+        /* ---- 运行模式横幅 ---- */
+        .mode-banner { margin: 0 auto 1.5rem; max-width: 680px; padding: .68rem 1.1rem; border-radius: 999px; text-align: center; font-size: .84rem; font-weight: 600; display: flex; align-items: center; justify-content: center; gap: .55rem; border: 1px solid var(--border); background: rgba(13,16,36,.5); backdrop-filter: blur(16px); animation: fadeDown .8s .45s both; }
+        .mode-banner::before { content:''; width: 8px; height: 8px; border-radius: 50%; background: currentColor; box-shadow: 0 0 12px currentColor; animation: corePulse 1.6s ease-in-out infinite; }
+        .mode-banner.node { color: #92f2c3; border-color: rgba(94,242,176,.4); background: rgba(94,242,176,.08); }
+        .mode-banner.demo { color: #ffd166; border-color: rgba(255,209,102,.4); background: rgba(255,209,102,.07); }
 
         /* ---- 导航 ---- */
-        .nav-tabs {
-            display: flex; gap: 0; justify-content: center;
-            background: var(--bg-card);
-            border: 1px solid var(--border);
-            border-radius: 50px; padding: 4px;
-            margin-bottom: 1.5rem;
-            backdrop-filter: var(--blur);
-            flex-wrap: wrap;
-        }
-        .nav-tab {
-            padding: 0.7rem 1.2rem; border-radius: 50px;
-            cursor: pointer; font-weight: 600; font-size: 0.85rem;
-            color: var(--dim); transition: all 0.3s;
-            white-space: nowrap; border: none; background: transparent;
-        }
-        .nav-tab.active {
-            background: var(--accent); color: #000;
-            box-shadow: 0 0 20px rgba(0, 240, 255, 0.4);
-        }
+        .nav-tabs { position: relative; display: flex; justify-content: center; gap: .15rem; background: rgba(13,16,36,.55); border: 1px solid var(--border); border-radius: 999px; padding: .35rem; margin-bottom: 1.6rem; backdrop-filter: blur(20px) saturate(150%); box-shadow: 0 12px 44px rgba(0,0,0,.4); flex-wrap: wrap; animation: fadeDown .8s .5s both; }
+        .nav-indicator { position: absolute; top: .35rem; bottom: .35rem; left: 0; width: 0; z-index: 0; border-radius: 999px; background: linear-gradient(120deg, rgba(0,240,255,.95), rgba(180,77,255,.95)); box-shadow: 0 0 26px rgba(0,240,255,.55), inset 0 1px 0 rgba(255,255,255,.45); transition: left .4s cubic-bezier(.22,1,.36,1), width .4s cubic-bezier(.22,1,.36,1); }
+        .nav-tab { position: relative; z-index: 1; padding: .72rem 1.15rem; border-radius: 999px; cursor: pointer; font-weight: 600; font-size: .85rem; color: var(--dim); transition: color .3s, text-shadow .3s; white-space: nowrap; border: none; background: transparent; width: auto; margin: 0; }
+        .nav-tab:hover { color: var(--text); text-shadow: 0 0 14px rgba(0,240,255,.55); transform: none; box-shadow: none; filter: none; }
+        .nav-tab::after { display: none; }
+        .nav-tab.active { color: #041018; font-weight: 800; }
 
         /* ---- 面板 ---- */
-        .panel {
-            display: none;
-            background: var(--bg-card);
-            border: 1px solid var(--border);
-            border-radius: var(--radius);
-            padding: 1.5rem;
-            backdrop-filter: var(--blur);
-            margin-bottom: 1.5rem;
-        }
-        .panel.active { display: block; }
-        .panel h2 {
-            font-size: 1.2rem; margin-bottom: 1rem;
-            color: var(--accent); display: flex; align-items: center; gap: 0.5rem;
-        }
+        .panel { display: none; position: relative; overflow: hidden; background-color: rgba(13,16,36,.55); background-image: repeating-linear-gradient(0deg, rgba(255,255,255,.012) 0 1px, transparent 1px 3px); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.6rem; backdrop-filter: blur(20px) saturate(150%); margin-bottom: 1.6rem; box-shadow: 0 18px 60px rgba(0,0,0,.42); }
+        .panel::before { content:''; position: absolute; top: 0; left: 0; right: 0; height: 1px; background: linear-gradient(90deg, transparent, rgba(0,240,255,.75), rgba(180,77,255,.75), transparent); pointer-events: none; }
+        .panel::after { content:''; position: absolute; width: 240px; height: 240px; right: -100px; top: -120px; border-radius: 50%; background: radial-gradient(circle, rgba(0,240,255,.13), transparent 65%); pointer-events: none; }
+        .panel.active { display: block; animation: panelIn .55s cubic-bezier(.22,1,.36,1) both; }
+        @keyframes panelIn { from { opacity: 0; transform: translateY(20px) scale(.985); filter: blur(8px); } }
+        .panel h2 { font-size: 1.02rem; margin-bottom: 1rem; color: var(--accent); display: flex; align-items: center; gap: .5rem; letter-spacing: .04em; text-shadow: 0 0 18px rgba(0,240,255,.35); }
+        .panel h2::after { content:''; flex: 1; height: 1px; background: linear-gradient(90deg, rgba(0,240,255,.4), transparent); margin-left: .4rem; }
+        /* ---- 表单与按钮 ---- */
+        input, textarea, select { background: rgba(6,8,20,.68); border: 1px solid var(--border); border-radius: 12px; padding: .8rem .95rem; color: var(--text); font-size: .9rem; width: 100%; margin-bottom: .7rem; font-family: inherit; transition: border-color .25s, box-shadow .25s, background .25s; outline: none; }
+        input:focus, textarea:focus, select:focus { border-color: var(--border-strong); box-shadow: 0 0 0 3px rgba(0,240,255,.12), 0 0 26px rgba(0,240,255,.16); background: rgba(8,12,28,.9); }
+        input::placeholder, textarea::placeholder { color: #5a6289; }
 
-        /* ---- 表单 ---- */
-        input, textarea, button, select {
-            background: rgba(26, 26, 40, 0.8);
-            border: 1px solid var(--border);
-            border-radius: 10px; padding: 0.8rem;
-            color: var(--text); font-size: 0.9rem;
-            width: 100%; margin-bottom: 0.7rem; font-family: inherit;
-            transition: all 0.2s;
-        }
-        input:focus, textarea:focus {
-            outline: none; border-color: var(--accent);
-            box-shadow: 0 0 12px rgba(0, 240, 255, 0.15);
-        }
-        button {
-            background: linear-gradient(135deg, var(--accent), var(--accent2));
-            color: #000; font-weight: 700; border: none;
-            cursor: pointer; letter-spacing: 0.5px;
-            transition: all 0.3s;
-        }
-        button:active { transform: scale(0.96); opacity: 0.8; }
-        .btn-sm { width: auto; padding: 0.5rem 1rem; font-size: 0.8rem; }
-        .row { display: flex; gap: 0.5rem; }
+        button { position: relative; overflow: hidden; background: linear-gradient(120deg, var(--accent), var(--accent2)); color: #041018; font-weight: 700; border: none; border-radius: 12px; padding: .8rem; width: 100%; margin-bottom: .7rem; font-family: inherit; font-size: .92rem; cursor: pointer; letter-spacing: .03em; transition: transform .25s, box-shadow .3s, filter .3s; box-shadow: 0 8px 30px rgba(0,240,255,.2), inset 0 1px 0 rgba(255,255,255,.35); }
+        button:hover { transform: translateY(-2px); box-shadow: 0 14px 44px rgba(0,240,255,.36), inset 0 1px 0 rgba(255,255,255,.42); filter: brightness(1.08); }
+        button:active { transform: scale(.97); }
+        button::after { content:''; position: absolute; top: 0; left: -80%; width: 55%; height: 100%; background: linear-gradient(100deg, transparent, rgba(255,255,255,.5), transparent); transform: skewX(-20deg); transition: left .55s ease; }
+        button:hover::after { left: 135%; }
+        button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+        .btn-sm { width: auto; padding: .5rem 1.1rem; font-size: .8rem; }
+        .btn-ghost { background: transparent; border: 1px solid var(--border-strong); color: var(--accent); box-shadow: none; }
+        .btn-ghost:hover { background: rgba(0,240,255,.08); box-shadow: none; filter: none; }
+        .btn-ghost::after { display: none; }
+        .row { display: flex; gap: .55rem; }
         .row input { flex: 1; }
 
         /* ---- 数据显示 ---- */
-        .address-box {
-            word-break: break-all; font-family: 'SF Mono', monospace;
-            background: #000; padding: 0.7rem; border-radius: 10px;
-            font-size: 0.8rem; margin-bottom: 0.5rem;
-            border: 1px solid var(--border);
-        }
-        .bal {
-            font-size: 1.8rem; font-weight: 700;
-            background: linear-gradient(135deg, var(--accent), var(--accent2));
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-        }
-        .response {
-            background: rgba(0,0,0,0.6); border: 1px solid var(--border);
-            border-radius: 10px; padding: 0.8rem; font-family: 'SF Mono', monospace;
-            white-space: pre-wrap; font-size: 0.8rem; max-height: 200px;
-            overflow-y: auto; margin-top: 0.5rem; color: var(--accent);
-        }
-        .warning { color: var(--danger); font-size: 0.78rem; margin-bottom: 0.5rem; }
-        .tag {
-            display: inline-block; padding: 0.2rem 0.6rem; border-radius: 20px;
-            font-size: 0.7rem; font-weight: 600;
-            background: rgba(0,240,255,0.15); color: var(--accent);
-        }
+        .address-box { word-break: break-all; font-family: var(--font-mono); background: rgba(3,5,14,.8); padding: .8rem .9rem; border-radius: 12px; font-size: .79rem; margin-bottom: .5rem; border: 1px solid var(--border); color: #a9e6ff; letter-spacing: .02em; box-shadow: inset 0 0 26px rgba(0,240,255,.05); cursor: pointer; }
+        .address-box:hover { border-color: var(--border-strong); }
+        .bal { font-size: 2rem; font-weight: 700; font-family: var(--font-display); background: linear-gradient(120deg, #7df9ff, var(--accent2)); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; filter: drop-shadow(0 0 20px rgba(0,240,255,.4)); }
+        .response { background: rgba(4,6,16,.82); border: 1px solid var(--border); border-radius: 12px; padding: .85rem; font-family: var(--font-mono); white-space: pre-wrap; word-break: break-all; font-size: .78rem; max-height: 220px; overflow-y: auto; margin-top: .4rem; color: var(--accent); box-shadow: inset 0 0 32px rgba(0,240,255,.05); }
+        .warning { color: var(--danger); font-size: .8rem; margin-bottom: .7rem; background: rgba(255,77,106,.08); border: 1px solid rgba(255,77,106,.28); border-radius: 10px; padding: .55rem .8rem; line-height: 1.6; }
+        .tag { display: inline-block; padding: .18rem .62rem; border-radius: 999px; font-size: .67rem; font-weight: 700; letter-spacing: .08em; background: rgba(0,240,255,.14); color: var(--accent); border: 1px solid rgba(0,240,255,.35); box-shadow: 0 0 12px rgba(0,240,255,.2); }
+        hr { border: none; height: 1px; background: linear-gradient(90deg, transparent, rgba(0,240,255,.35), transparent); margin: 1.4rem 0; }
 
-        /* ---- 看板卡片 ---- */
-        .stat-grid {
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 1rem;
-            margin-bottom: 1.5rem;
-        }
-        .stat-card {
-            background: linear-gradient(135deg, rgba(0,240,255,0.08), rgba(180,77,255,0.08));
-            border: 1px solid var(--border);
-            border-radius: 14px;
-            padding: 1.2rem;
-            text-align: center;
-            backdrop-filter: var(--blur);
-            transition: transform 0.2s;
-        }
-        .stat-card:hover { transform: translateY(-2px); }
-        .stat-card .label {
-            font-size: 0.8rem; color: var(--dim);
-            text-transform: uppercase; letter-spacing: 1px;
-            margin-bottom: 0.5rem;
-        }
-        .stat-card .value {
-            font-size: 2rem; font-weight: 700;
-            background: linear-gradient(135deg, var(--accent), var(--accent2));
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-        }
+        /* ---- 看板 ---- */
+        .stat-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-bottom: 1.5rem; }
+        .stat-card { position: relative; transform-style: preserve-3d; text-align: center; padding: 1.35rem 1rem; border-radius: 16px; border: 1px solid var(--border); background: linear-gradient(160deg, rgba(0,240,255,.09), rgba(180,77,255,.07) 60%, rgba(13,16,36,.4)); backdrop-filter: blur(14px); transition: box-shadow .35s, border-color .35s; will-change: transform; }
+        .stat-card::before { content:''; position: absolute; inset: 0; border-radius: 16px; background: radial-gradient(420px circle at var(--mx, 50%) var(--my, 50%), rgba(0,240,255,.16), transparent 45%); opacity: 0; transition: opacity .3s; pointer-events: none; }
+        .stat-card:hover { border-color: var(--border-strong); box-shadow: 0 18px 50px rgba(0,240,255,.16), 0 0 0 1px rgba(0,240,255,.1); }
+        .stat-card:hover::before { opacity: 1; }
+        .stat-card .label { font-size: .78rem; color: var(--dim); text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: .55rem; }
+        .stat-card .value { font-size: 1.85rem; font-weight: 700; font-family: var(--font-display); letter-spacing: .02em; background: linear-gradient(120deg, #7df9ff, var(--accent2)); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; filter: drop-shadow(0 0 16px rgba(0,240,255,.3)); }
 
-        /* 预售进度条 */
-        .progress-section {
-            background: var(--bg-card);
-            border: 1px solid var(--border);
-            border-radius: 14px;
-            padding: 1.5rem;
-            margin-bottom: 1.5rem;
-            backdrop-filter: var(--blur);
-        }
-        .progress-header {
-            display: flex; justify-content: space-between; align-items: center;
-            margin-bottom: 1rem;
-        }
-        .progress-header .stage {
-            background: linear-gradient(135deg, var(--accent), var(--accent2));
-            color: #000; font-weight: 700; padding: 0.3rem 0.9rem;
-            border-radius: 20px; font-size: 0.85rem;
-        }
-        .progress-bar-bg {
-            background: rgba(255,255,255,0.05);
-            border-radius: 20px; height: 12px; overflow: hidden;
-            margin-bottom: 0.8rem;
-        }
-        .progress-bar-fill {
-            height: 100%; border-radius: 20px;
-            background: linear-gradient(90deg, var(--accent), var(--accent2));
-            transition: width 0.8s ease;
-        }
-        .progress-meta {
-            display: flex; justify-content: space-between;
-            font-size: 0.8rem; color: var(--dim);
-        }
+        .progress-section { position: relative; overflow: hidden; background: var(--bg-panel); border: 1px solid var(--border); border-radius: 16px; padding: 1.5rem; margin-bottom: 1.5rem; backdrop-filter: blur(16px); }
+        .progress-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
+        .progress-header .stage { background: linear-gradient(120deg, var(--accent), var(--accent2)); color: #041018; font-weight: 800; font-family: var(--font-display); letter-spacing: .05em; padding: .32rem 1rem; border-radius: 999px; font-size: .85rem; box-shadow: 0 0 24px rgba(0,240,255,.35); }
+        .progress-bar-bg { background: rgba(255,255,255,.06); border-radius: 999px; height: 14px; overflow: hidden; margin-bottom: .85rem; box-shadow: inset 0 2px 6px rgba(0,0,0,.5); }
+        .progress-bar-fill { position: relative; height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--accent), var(--accent2)); box-shadow: 0 0 18px rgba(0,240,255,.6); transition: width .9s cubic-bezier(.22,1,.36,1); }
+        .progress-bar-fill::after { content:''; position: absolute; inset: 0; background: linear-gradient(100deg, transparent 30%, rgba(255,255,255,.55) 50%, transparent 70%); background-size: 200% 100%; animation: shimmer 2.4s linear infinite; }
+        @keyframes shimmer { from { background-position: 180% 0; } to { background-position: -80% 0; } }
+        .progress-meta { display: flex; justify-content: space-between; font-size: .8rem; color: var(--dim); }
 
-        /* 合约统计列表 */
-        .stat-list {
-            display: grid; grid-template-columns: 1fr 1fr; gap: 0.8rem;
-        }
-        .stat-item {
-            background: rgba(0,0,0,0.4); border-radius: 12px;
-            padding: 1rem; border: 1px solid var(--border);
-        }
-        .stat-item .s-label { color: var(--dim); font-size: 0.8rem; }
-        .stat-item .s-value { font-size: 1.3rem; font-weight: 700; color: var(--accent); }
-        .stat-item .s-reward { font-size: 0.8rem; color: var(--accent2); }
+        .stat-list { display: grid; grid-template-columns: 1fr 1fr; gap: .8rem; }
+        .stat-item { position: relative; transform-style: preserve-3d; background: rgba(3,5,14,.55); border-radius: 14px; padding: 1.05rem 1.1rem; border: 1px solid var(--border); transition: box-shadow .35s, border-color .35s; will-change: transform; }
+        .stat-item::before { content:''; position: absolute; inset: 0; border-radius: 14px; background: radial-gradient(360px circle at var(--mx, 50%) var(--my, 50%), rgba(180,77,255,.14), transparent 45%); opacity: 0; transition: opacity .3s; pointer-events: none; }
+        .stat-item:hover { border-color: rgba(180,77,255,.35); box-shadow: 0 14px 40px rgba(180,77,255,.14); }
+        .stat-item:hover::before { opacity: 1; }
+        .stat-item .s-label { color: var(--dim); font-size: .8rem; margin-bottom: .3rem; }
+        .stat-item .s-value { font-size: 1.3rem; font-weight: 700; font-family: var(--font-display); color: var(--accent); }
+        .stat-item .s-reward { font-size: .8rem; color: var(--accent2); margin-top: .3rem; }
 
-        .presale-config {
-            display: flex; gap: 0.5rem; margin-bottom: 1rem;
-            flex-wrap: wrap;
-        }
+        .presale-config { display: flex; gap: .55rem; margin-bottom: 1rem; flex-wrap: wrap; }
         .presale-config input { flex: 1; min-width: 200px; }
 
-        .mode-banner {
-            margin: 0 auto 1rem;
-            max-width: 900px;
-            padding: 0.8rem 1rem;
-            border-radius: 999px;
-            text-align: center;
-            font-size: 0.9rem;
-            font-weight: 600;
-            border: 1px solid var(--border);
-            backdrop-filter: var(--blur);
-        }
-        .mode-banner.node {
-            color: #92f2c3;
-            background: rgba(94, 242, 176, 0.12);
-        }
-        .mode-banner.demo {
-            color: #ffd166;
-            background: rgba(255, 209, 102, 0.12);
-        }
+        /* ---- 滚动显现 ---- */
+        .reveal { opacity: 0; transform: translateY(22px); transition: opacity .7s cubic-bezier(.22,1,.36,1), transform .7s cubic-bezier(.22,1,.36,1); transition-delay: var(--d, 0s); }
+        .reveal.in { opacity: 1; transform: none; }
 
-        @media (max-width: 600px) {
+        /* ---- Toast ---- */
+        #toastWrap { position: fixed; top: 20px; right: 20px; z-index: 999; display: flex; flex-direction: column; align-items: flex-end; gap: .6rem; pointer-events: none; }
+        .toast { min-width: 220px; max-width: 340px; pointer-events: auto; background: rgba(10,14,32,.92); border: 1px solid var(--border-strong); border-left: 3px solid var(--accent); color: var(--text); padding: .85rem 1.05rem; border-radius: 12px; font-size: .85rem; line-height: 1.5; box-shadow: 0 14px 44px rgba(0,0,0,.5), 0 0 26px rgba(0,240,255,.16); backdrop-filter: blur(16px); animation: toastIn .4s cubic-bezier(.22,1,.36,1) both; }
+        .toast.out { animation: toastOut .35s ease both; }
+        @keyframes toastIn { from { opacity: 0; transform: translateX(46px) scale(.94); } }
+        @keyframes toastOut { to { opacity: 0; transform: translateX(46px) scale(.94); } }
+
+        @media (max-width: 640px) {
             .stat-grid { grid-template-columns: 1fr; }
             .stat-list { grid-template-columns: 1fr; }
-            .nav-tab { padding: 0.5rem 0.8rem; font-size: 0.75rem; }
-            .header .logo { font-size: 2.2rem; }
+            .nav-indicator { display: none; }
+            .nav-tab { padding: .55rem .85rem; font-size: .76rem; }
+            .nav-tab.active { background: linear-gradient(120deg, var(--accent), var(--accent2)); color: #041018; box-shadow: 0 0 18px rgba(0,240,255,.4); }
+            .header .logo { font-size: 2.6rem; }
+            .kicker { letter-spacing: .28em; padding-left: .28em; }
+            .hud-corner { display: none; }
+            .orb { filter: blur(90px); }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
         }
     </style>
 </head>
 <body>
-
-<!-- 粒子背景 -->
+<!-- 背景层 -->
+<div id="bg-aurora"><div class="orb orb-a"></div><div class="orb orb-b"></div><div class="orb orb-c"></div></div>
+<div id="bg-grid"></div>
 <div id="particles"></div>
+<canvas id="network"></canvas>
+<div id="spotlight"></div>
+<div class="hud-corner hud-tl"></div>
+<div class="hud-corner hud-tr"></div>
+<div class="hud-corner hud-bl"></div>
+<div class="hud-corner hud-br"></div>
 
-<!-- 主容器 -->
 <div class="app-container">
+
     <!-- 头部 -->
-    <div class="header">
-        <div class="logo">NOVA</div>
-        <div class="tagline">超新星并行宇宙 · 创作者驱动的抗量子公链</div>
-    </div>
+    <header class="header">
+        <div class="core-ring"><div class="core"></div></div>
+        <div class="kicker">Quantum Frontier · 未来前沿区</div>
+        <div class="logo" data-text="NOVA">NOVA</div>
+        <div class="tagline" id="tagline" data-text="超新星并行宇宙 · 创作者驱动的抗量子公链"></div>
+        <div class="hero-badges">
+            <span class="chip">🛡 抗量子</span>
+            <span class="chip">⛓ Web3 原生</span>
+            <span class="chip">🧬 DAG 结构</span>
+            <span class="chip">✨ 创作者驱动</span>
+        </div>
+    </header>
 
     <div id="runtimeModeBanner" class="mode-banner demo">正在检测运行模式…</div>
 
     <!-- 导航 -->
-    <div class="nav-tabs" id="navTabs">
+    <nav class="nav-tabs" id="navTabs">
+        <span class="nav-indicator"></span>
         <button class="nav-tab active" data-panel="wallet">🔐 钱包</button>
         <button class="nav-tab" data-panel="verify">🔍 验证</button>
         <button class="nav-tab" data-panel="deploy">📜 合约</button>
         <button class="nav-tab" data-panel="stake">⚡ 质押</button>
         <button class="nav-tab" data-panel="early">🎁 早期激励</button>
-    </div>
+    </nav>
 
     <!-- ========== 钱包面板 ========== -->
-    <div class="panel active" id="panel-wallet">
-        <h2>🔐 量子安全钱包</h2>
-        <div class="warning">⚠️ 私钥/助记词只存在于你的浏览器，请务必离线备份</div>
-        <div class="row">
+    <section class="panel active" id="panel-wallet">
+        <h2 class="reveal" style="--d:0s">🔐 量子安全钱包</h2>
+        <div class="warning reveal" style="--d:.05s">⚠️ 私钥/助记词只存在于你的浏览器，请务必离线备份</div>
+        <div class="row reveal" style="--d:.1s">
             <input type="text" id="rpcUrl" placeholder="节点RPC地址" value="http://127.0.0.1:8080">
-            <button class="btn-sm" onclick="checkNode()">连接</button>
+            <button class="btn-sm magnetic" onclick="checkNode()">连接</button>
         </div>
-        <div id="nodeStatus" class="response" style="max-height:30px; margin-bottom:1rem;"></div>
-        <button onclick="createWallet()">✨ 创建抗量子钱包</button>
-        <input type="text" id="importKey" placeholder="粘贴私钥 (hex)">
-        <button onclick="importWallet()">📥 导入私钥</button>
-        <div style="margin-top:1rem;">
+        <div id="nodeStatus" class="response reveal" style="--d:.15s; max-height:30px; margin-bottom:1rem;"></div>
+        <button class="magnetic reveal" style="--d:.2s" onclick="createWallet()">✨ 创建抗量子钱包</button>
+        <input type="text" id="importKey" placeholder="粘贴私钥 (hex)" class="reveal" style="--d:.25s">
+        <button class="magnetic reveal" style="--d:.3s" onclick="importWallet()">📥 导入私钥</button>
+        <div class="reveal" style="--d:.35s; margin-top:1rem;">
             <div><strong>我的地址</strong> <span class="tag">抗量子</span></div>
             <div class="address-box" id="myAddress">—</div>
             <div><strong>余额</strong> <span class="bal" id="myBalance">0</span> NOVA</div>
         </div>
-        <button onclick="exportKey()" class="btn-sm" style="margin-top:0.5rem;">导出私钥</button>
-        <hr style="border-color:var(--border); margin:1rem 0;">
-        <h2>💸 转账</h2>
-        <input type="text" id="toAddr" placeholder="接收方地址">
-        <input type="number" id="amount" placeholder="金额" step="any">
-        <input type="text" id="memo" placeholder="备注">
-        <button onclick="sendTx()">签名并发送</button>
-        <div class="response" id="txResult"></div>
-    </div>
-
+        <button class="btn-sm magnetic reveal" style="--d:.4s; margin-top:.5rem;" onclick="exportKey()">导出私钥</button>
+        <hr class="reveal" style="--d:.45s">
+        <h2 class="reveal" style="--d:.5s">💸 转账</h2>
+        <input type="text" id="toAddr" placeholder="接收方地址" class="reveal" style="--d:.55s">
+        <input type="number" id="amount" placeholder="金额" step="any" class="reveal" style="--d:.6s">
+        <input type="text" id="memo" placeholder="备注" class="reveal" style="--d:.65s">
+        <button class="magnetic reveal" style="--d:.7s" onclick="sendTx()">签名并发送</button>
+        <div class="response reveal" id="txResult" style="--d:.75s"></div>
+    </section>
     <!-- ========== 验证面板 → 实时数据看板 ========== -->
-    <div class="panel" id="panel-verify">
-        <!-- 预售接收地址（只读展示） -->
-        <div style="margin-bottom: 1.2rem;">
+    <section class="panel" id="panel-verify">
+        <div class="reveal" style="--d:0s; margin-bottom:1.2rem;">
             <h2>💰 预售接收地址</h2>
-            <div class="address-box" style="user-select: all; cursor: copy;" onclick="copyAddress()" title="点击复制">
-                0x6a5C3f17af93f690847208E68722afeaE7108bc5
-            </div>
-            <div style="font-size: 0.8rem; color: var(--accent);">
-                📌 仅接收 <strong>BSC链（BNB Smart Chain）</strong> 的 USDT
-            </div>
+            <div class="address-box" style="user-select:all;" onclick="copyAddress()" title="点击复制">0x6a5C3f17af93f690847208E68722afeaE7108bc5</div>
+            <div style="font-size:.8rem; color:var(--accent);">📌 仅接收 <strong>BSC链（BNB Smart Chain）</strong> 的 USDT</div>
         </div>
 
-        <div class="presale-config">
+        <div class="presale-config reveal" style="--d:.05s">
             <input type="text" id="presalePoolAddr" placeholder="预售池地址" value="0x6a5C3f17af93f690847208E68722afeaE7108bc5" readonly>
-            <button class="btn-sm" onclick="refreshDashboard()">刷新看板</button>
+            <button class="btn-sm magnetic" onclick="refreshDashboard()">刷新看板</button>
         </div>
 
-        <!-- 第一行：核心指标卡片 -->
-        <div class="stat-grid">
-            <div class="stat-card">
+        <div class="stat-grid reveal" style="--d:.1s">
+            <div class="stat-card" data-tilt>
                 <div class="label">区块高度</div>
-                <div class="value" id="statDag">0</div>
+                <div class="value" id="statDag" data-countup>0</div>
             </div>
-            <div class="stat-card">
+            <div class="stat-card" data-tilt>
                 <div class="label">在线节点</div>
-                <div class="value" id="statPeers">0</div>
+                <div class="value" id="statPeers" data-countup>0</div>
             </div>
-            <div class="stat-card">
+            <div class="stat-card" data-tilt>
                 <div class="label">全网质押</div>
-                <div class="value" id="statStake">0</div>
+                <div class="value" id="statStake" data-countup>0</div>
             </div>
         </div>
 
-        <!-- 第二行：预售进度 -->
-        <div class="progress-section">
+        <div class="progress-section reveal" style="--d:.15s">
             <div class="progress-header">
                 <span class="stage" id="presaleStage">阶段 1</span>
                 <span id="presalePrice" style="color:var(--accent); font-weight:600;">0.00001 USDT</span>
             </div>
             <div class="progress-bar-bg">
-                <div class="progress-bar-fill" id="presaleBar" style="width: 0%;"></div>
+                <div class="progress-bar-fill" id="presaleBar" style="width:0%;"></div>
             </div>
             <div class="progress-meta">
                 <span id="presaleSold">已售 0 / 1,350,000</span>
@@ -368,92 +342,94 @@
             </div>
         </div>
 
-        <!-- 第三行：合约统计 -->
-        <div class="stat-list">
-            <div class="stat-item">
+        <div class="stat-list reveal" style="--d:.2s">
+            <div class="stat-item" data-tilt>
                 <div class="s-label">已部署合约</div>
-                <div class="s-value" id="statDeploy">0</div>
-                <div class="s-reward">部署奖励: <span id="statDeployReward">5.0</span> NOVA</div>
+                <div class="s-value" id="statDeploy" data-countup>0</div>
+                <div class="s-reward">部署奖励: <span id="statDeployReward" data-countup>5.0</span> NOVA</div>
             </div>
-            <div class="stat-item">
+            <div class="stat-item" data-tilt>
                 <div class="s-label">合约总调用</div>
-                <div class="s-value" id="statCalls">0</div>
-                <div class="s-reward">调用分红: <span id="statCallReward">0.1</span> NOVA</div>
+                <div class="s-value" id="statCalls" data-countup>0</div>
+                <div class="s-reward">调用分红: <span id="statCallReward" data-countup>0.1</span> NOVA</div>
             </div>
-            <div class="stat-item">
+            <div class="stat-item" data-tilt>
                 <div class="s-label">推荐人数</div>
-                <div class="s-value" id="statRefs">0</div>
-                <div class="s-reward">推荐奖励: <span id="statRefReward">1.0</span> NOVA</div>
+                <div class="s-value" id="statRefs" data-countup>0</div>
+                <div class="s-reward">推荐奖励: <span id="statRefReward" data-countup>1.0</span> NOVA</div>
             </div>
-            <div class="stat-item">
+            <div class="stat-item" data-tilt>
                 <div class="s-label">轻节点验证</div>
                 <div class="s-value" id="statLightVerify">—</div>
-                <div class="s-reward">奖励: <span id="statLightReward">—</span> NOVA</div>
+                <div class="s-reward">奖励: <span id="statLightReward" data-countup>—</span> NOVA</div>
             </div>
         </div>
 
-        <hr style="border-color:var(--border); margin:1.5rem 0;">
+        <hr class="reveal" style="--d:.25s">
 
-        <h2>🔍 轻节点验证</h2>
-        <input type="text" id="txidToVerify" placeholder="输入交易ID">
-        <button onclick="verifyTx()">查询链上存在性</button>
-        <div class="response" id="verifyResult"></div>
+        <h2 class="reveal" style="--d:.3s">🔍 轻节点验证</h2>
+        <input type="text" id="txidToVerify" placeholder="输入交易ID" class="reveal" style="--d:.35s">
+        <button class="magnetic reveal" style="--d:.4s" onclick="verifyTx()">查询链上存在性</button>
+        <div class="response reveal" id="verifyResult" style="--d:.45s"></div>
 
-        <hr style="border-color:var(--border); margin:1.5rem 0;">
+        <hr class="reveal" style="--d:.5s">
 
-        <h2>🔗 预售地址绑定（必须完成）</h2>
-        <div class="warning">⚠️ 必须先用Nova私钥签名绑定你的<strong>BSC地址</strong>，再向预售地址转账USDT</div>
-        <input type="text" id="bscAddress" placeholder="你的BSC地址 (0x...)">
-        <button onclick="bindPresale()">用Nova私钥签名绑定</button>
-        <div class="response" id="bindResult"></div>
-    </div>
-
+        <h2 class="reveal" style="--d:.55s">🔗 预售地址绑定（必须完成）</h2>
+        <div class="warning reveal" style="--d:.6s">⚠️ 必须先用Nova私钥签名绑定你的<strong>BSC地址</strong>，再向预售地址转账USDT</div>
+        <input type="text" id="bscAddress" placeholder="你的BSC地址 (0x...)" class="reveal" style="--d:.65s">
+        <button class="magnetic reveal" style="--d:.7s" onclick="bindPresale()">用Nova私钥签名绑定</button>
+        <div class="response reveal" id="bindResult" style="--d:.75s"></div>
+    </section>
     <!-- ========== 合约面板 ========== -->
-    <div class="panel" id="panel-deploy">
-        <h2>📜 部署合约</h2>
-        <textarea id="bytecode" placeholder="合约字节码" rows="3"></textarea>
-        <button onclick="deployContract()">部署 (+5 NOVA 奖励)</button>
-        <div class="response" id="deployResult"></div>
-        <hr style="border-color:var(--border); margin:1rem 0;">
-        <h2>🔧 调用合约</h2>
-        <input type="text" id="contractAddr" placeholder="合约地址">
-        <input type="number" id="callAmount" placeholder="金额" value="0" step="any">
-        <input type="text" id="callMsg" placeholder="消息 (如 buy_song)">
-        <button onclick="callContract()">调用</button>
-        <div class="response" id="callResult"></div>
-    </div>
+    <section class="panel" id="panel-deploy">
+        <h2 class="reveal" style="--d:0s">📜 部署合约</h2>
+        <textarea id="bytecode" placeholder="合约字节码" rows="3" class="reveal" style="--d:.05s"></textarea>
+        <button class="magnetic reveal" style="--d:.1s" onclick="deployContract()">部署 (+5 NOVA 奖励)</button>
+        <div class="response reveal" id="deployResult" style="--d:.15s"></div>
+        <hr class="reveal" style="--d:.2s">
+        <h2 class="reveal" style="--d:.25s">🔧 调用合约</h2>
+        <input type="text" id="contractAddr" placeholder="合约地址" class="reveal" style="--d:.3s">
+        <input type="number" id="callAmount" placeholder="金额" value="0" step="any" class="reveal" style="--d:.35s">
+        <input type="text" id="callMsg" placeholder="消息 (如 buy_song)" class="reveal" style="--d:.4s">
+        <button class="magnetic reveal" style="--d:.45s" onclick="callContract()">调用</button>
+        <div class="response reveal" id="callResult" style="--d:.5s"></div>
+    </section>
 
     <!-- ========== 质押面板 ========== -->
-    <div class="panel" id="panel-stake">
-        <h2>🔒 质押成为验证者</h2>
-        <input type="number" id="stakeAmount" placeholder="数量 (100-10000)" value="100">
-        <button onclick="stake()">质押 NOVA</button>
-        <div class="response" id="stakeResult"></div>
-        <hr style="border-color:var(--border); margin:1rem 0;">
-        <h2>🔓 解除质押</h2>
-        <button onclick="unstake()">解除 (7天冷静期)</button>
-        <div class="response" id="unstakeResult"></div>
-        <hr style="border-color:var(--border); margin:1rem 0;">
-        <h2>💰 领取返还</h2>
-        <button onclick="claim()">领取到期质押</button>
-        <div class="response" id="claimResult"></div>
-        <hr style="border-color:var(--border); margin:1rem 0;">
-        <h2>📋 全网质押</h2>
-        <button onclick="queryStakes()">查询</button>
-        <div class="response" id="stakesResult"></div>
-    </div>
+    <section class="panel" id="panel-stake">
+        <h2 class="reveal" style="--d:0s">🔒 质押成为验证者</h2>
+        <input type="number" id="stakeAmount" placeholder="数量 (100-10000)" value="100" class="reveal" style="--d:.05s">
+        <button class="magnetic reveal" style="--d:.1s" onclick="stake()">质押 NOVA</button>
+        <div class="response reveal" id="stakeResult" style="--d:.15s"></div>
+        <hr class="reveal" style="--d:.2s">
+        <h2 class="reveal" style="--d:.25s">🔓 解除质押</h2>
+        <input type="number" id="unstakeAmount" placeholder="解押数量（每次不超过当前质押的25%）" class="reveal" style="--d:.28s">
+        <button class="magnetic reveal" style="--d:.3s" onclick="unstake()">解除 (7天冷静期)</button>
+        <div class="response reveal" id="unstakeResult" style="--d:.35s"></div>
+        <hr class="reveal" style="--d:.4s">
+        <h2 class="reveal" style="--d:.45s">💰 领取返还</h2>
+        <button class="magnetic reveal" style="--d:.5s" onclick="claim()">领取到期质押</button>
+        <div class="response reveal" id="claimResult" style="--d:.55s"></div>
+        <hr class="reveal" style="--d:.6s">
+        <h2 class="reveal" style="--d:.65s">📋 全网质押</h2>
+        <button class="magnetic reveal" style="--d:.7s" onclick="queryStakes()">查询</button>
+        <div class="response reveal" id="stakesResult" style="--d:.75s"></div>
+    </section>
 
     <!-- ========== 早期激励面板 ========== -->
-    <div class="panel" id="panel-early">
-        <h2>🎁 早期激励</h2>
-        <div class="warning">前81位矿工 + 前8100位轻节点参与者可获前置空投100 NOVA（锁定3年），保持9个月在线额外奖励</div>
-        <button onclick="checkin()">📅 每日签到</button>
-        <button onclick="queryEarlyInfo()">查询我的激励状态</button>
-        <div class="response" id="earlyResult"></div>
-    </div>
+    <section class="panel" id="panel-early">
+        <h2 class="reveal" style="--d:0s">🎁 早期激励</h2>
+        <div class="warning reveal" style="--d:.05s">前81位矿工 + 前8100位轻节点参与者可获前置空投100 NOVA（锁定3年），保持9个月在线额外奖励</div>
+        <button class="magnetic reveal" style="--d:.1s" onclick="checkin()">📅 每日签到</button>
+        <button class="magnetic reveal" style="--d:.15s" onclick="queryEarlyInfo()">查询我的激励状态</button>
+        <button class="magnetic reveal" style="--d:.15s" onclick="unlockAirdrop()">🔓 领取解锁空投</button>
+        <div class="response reveal" id="earlyResult" style="--d:.2s"></div>
+    </section>
+
 </div>
 
 <script>
+
     // ========== 粒子背景 ==========
     (function() {
         const container = document.getElementById('particles');
@@ -496,58 +472,142 @@
         return new TextEncoder().encode(str);
     }
 
-    function hmacSha3_256(keyBytes, messageBytes) {
-        const blockSize = 64;
-        const key = keyBytes.length > blockSize ? hexToBytes(sha3_256(keyBytes)) : keyBytes;
-        const ipad = new Uint8Array(blockSize);
-        const opad = new Uint8Array(blockSize);
-        key.forEach((b, i) => {
-            ipad[i] = b ^ 0x36;
-            opad[i] = b ^ 0x5c;
-        });
-        const inner = new Uint8Array(ipad.length + messageBytes.length);
-        inner.set(ipad, 0);
-        inner.set(messageBytes, ipad.length);
-        const innerHash = hexToBytes(sha3_256(inner));
-        const outer = new Uint8Array(opad.length + innerHash.length);
-        outer.set(opad, 0);
-        outer.set(innerHash, opad.length);
-        return hexToBytes(sha3_256(outer));
+    // ========== Ed25519 (RFC 8032)，与后端 core/crypto.py 的回退实现一致 ==========
+    const ED_P = (1n << 255n) - 19n;
+    const ED_L = (1n << 252n) + 27742317777372353535851937790883648493n;
+    const ED_D = (-121665n * modPow(121666n, ED_P - 2n, ED_P)) % ED_P;
+    const ED_BX = 15112221349535400772501151409588531511454012693041857206046113283949847762202n;
+    const ED_BY = 46316835694926478169428394003475163141307993866256225615783033603165251855960n;
+    const ED_B = [ED_BX, ED_BY, 1n, (ED_BX * ED_BY) % ED_P];
+
+    function modPow(base, exp, mod) {
+        let b = base % mod;
+        if (b < 0n) b += mod;
+        let r = 1n;
+        while (exp > 0n) {
+            if (exp & 1n) r = (r * b) % mod;
+            b = (b * b) % mod;
+            exp >>= 1n;
+        }
+        return r;
     }
+
+    function modP(n) { n %= ED_P; return n < 0n ? n + ED_P : n; }
+
+    function leBytesToBigInt(bytes) {
+        let n = 0n;
+        for (let i = bytes.length - 1; i >= 0; i--) n = (n << 8n) | BigInt(bytes[i]);
+        return n;
+    }
+
+    function bigIntToLeBytes(n, len) {
+        const out = new Uint8Array(len);
+        for (let i = 0; i < len; i++) { out[i] = Number(n & 0xffn); n >>= 8n; }
+        return out;
+    }
+
+    function concatBytes(a, b) {
+        const out = new Uint8Array(a.length + b.length);
+        out.set(a, 0);
+        out.set(b, a.length);
+        return out;
+    }
+
+    function edwardsAdd(p, q) {
+        const x1 = p[0], y1 = p[1], z1 = p[2], t1 = p[3];
+        const x2 = q[0], y2 = q[1], z2 = q[2], t2 = q[3];
+        const a = (y1 - x1) * (y2 - x2) % ED_P;
+        const b = (y1 + x1) * (y2 + x2) % ED_P;
+        const c = (2n * ED_D * t1 * t2) % ED_P;
+        const d = (2n * z1 * z2) % ED_P;
+        const e = b - a;
+        const f = d - c;
+        const g = d + c;
+        const h = b + a;
+        return [modP(e * f), modP(g * h), modP(f * g), modP(e * h)];
+    }
+
+    function edwardsScalarMult(p, e) {
+        let q = [0n, 1n, 1n, 0n];
+        while (e > 0n) {
+            if (e & 1n) q = edwardsAdd(q, p);
+            p = edwardsAdd(p, p);
+            e >>= 1n;
+        }
+        return q;
+    }
+
+    function edwardsEncode(p) {
+        const zInv = modPow(p[2], ED_P - 2n, ED_P);
+        const xr = modP(p[0] * zInv);
+        const yr = modP(p[1] * zInv);
+        const bits = yr | ((xr & 1n) << 255n);
+        return bigIntToLeBytes(bits, 32);
+    }
+
+    function edwardsClamp(a) {
+        a &= (1n << 255n) - 1n - 7n;
+        a |= 1n << 254n;
+        return a;
+    }
+
+    async function sha512(bytes) {
+        const buf = await crypto.subtle.digest('SHA-512', bytes);
+        return new Uint8Array(buf);
+    }
+
+    async function ed25519PublicKey(seedBytes) {
+        const h = await sha512(seedBytes);
+        const a = edwardsClamp(leBytesToBigInt(h.slice(0, 32)));
+        return edwardsEncode(edwardsScalarMult(ED_B, a));
+    }
+
+    async function ed25519Sign(seedBytes, msgBytes) {
+        const h = await sha512(seedBytes);
+        const a = edwardsClamp(leBytesToBigInt(h.slice(0, 32)));
+        const prefix = h.slice(32);
+        const r = leBytesToBigInt(await sha512(concatBytes(prefix, msgBytes))) % ED_L;
+        const pubBytes = await ed25519PublicKey(seedBytes);
+        const rBytes = edwardsEncode(edwardsScalarMult(ED_B, r));
+        const k = leBytesToBigInt(await sha512(concatBytes(concatBytes(rBytes, pubBytes), msgBytes))) % ED_L;
+        const s = (r + k * a) % ED_L;
+        return concatBytes(rBytes, bigIntToLeBytes(s, 32));
+    }
+
+    function webcryptoAvailable() { return !!(window.crypto && window.crypto.subtle); }
 
     function deriveAddress(pubHex) {
         const pubBytes = hexToBytes(pubHex);
         return '0x' + sha3_512(pubBytes).substring(0, 40);
     }
 
-    function sign(privHex, msg) {
-        const privBytes = hexToBytes(privHex);
-        const pubBytes = hexToBytes(getPubFromPriv(privHex));
-        const sigBytes = hmacSha3_256(pubBytes, utf8ToBytes(msg));
+    async function sign(privHex, msg) {
+        const sigBytes = await ed25519Sign(hexToBytes(privHex), utf8ToBytes(msg));
         return bytesToHex(sigBytes);
     }
 
-    function getPriv() { return localStorage.getItem('nova_priv'); }
+    function getPriv() { return localStorage.getItem('nova_priv'); }    function getPriv() { return localStorage.getItem('nova_priv'); }
     function setPriv(k) { localStorage.setItem('nova_priv', k); }
-    function getAddrFromPriv(priv) {
-        return deriveAddress(getPubFromPriv(priv));
+    async function getAddrFromPriv(priv) {
+        return deriveAddress(await getPubFromPriv(priv));
     }
-    function getPubFromPriv(priv) {
-        return sha3_256(hexToBytes(priv));
+    async function getPubFromPriv(priv) {
+        return bytesToHex(await ed25519PublicKey(hexToBytes(priv)));
     }
 
-    function updateUI() {
+    async function updateUI() {
         const priv = getPriv();
         if (!priv) {
             document.getElementById('myAddress').textContent = '—';
             document.getElementById('myBalance').textContent = '0';
             return;
         }
-        document.getElementById('myAddress').textContent = getAddrFromPriv(priv);
+        document.getElementById('myAddress').textContent = await getAddrFromPriv(priv);
         fetchBalance();
     }
 
-    function createWallet() {
+    async function createWallet() {
+        if (!webcryptoAvailable()) return alert('当前环境不支持 WebCrypto（需要 HTTPS 或 localhost），无法创建钱包');
         const randomBytes = new Uint8Array(32);
         if (window.crypto && window.crypto.getRandomValues) {
             window.crypto.getRandomValues(randomBytes);
@@ -556,17 +616,17 @@
         }
         const priv = bytesToHex(randomBytes);
         setPriv(priv);
-        updateUI();
+        await updateUI();
         alert('抗量子钱包已创建！请导出私钥并离线备份。');
     }
 
-    function importWallet() {
+    async function importWallet() {
         const priv = document.getElementById('importKey').value.trim();
         if (!priv) return alert('请输入私钥');
         const clean = priv.replace(/^0x/, '');
-        if (!/^[0-9a-fA-F]{32,}$/.test(clean)) return alert('无效私钥');
+        if (!/^[0-9a-fA-F]{64}$/.test(clean)) return alert('无效私钥（应为 64 位十六进制）');
         setPriv(clean);
-        updateUI();
+        await updateUI();
         alert('导入成功');
     }
 
@@ -674,21 +734,23 @@
 
     async function fetchBalance() {
         const priv = getPriv(); if (!priv) return;
-        const d = await api('/api/balance/'+getAddrFromPriv(priv));
+        const d = await api('/api/balance/' + await getAddrFromPriv(priv));
         document.getElementById('myBalance').textContent = d.balance ?? '?';
     }
 
     async function sendTx() {
         const priv = getPriv(); if (!priv) return alert('请先创建或导入钱包');
-        const sender = getAddrFromPriv(priv);
+        if (!webcryptoAvailable()) return alert('当前环境不支持 WebCrypto（需要 HTTPS 或 localhost），无法签名');
+        const sender = await getAddrFromPriv(priv);
         const to = document.getElementById('toAddr').value.trim();
         const amt = parseFloat(document.getElementById('amount').value);
         const memo = document.getElementById('memo').value;
         if (!to || isNaN(amt) || amt <= 0) return alert('填写正确地址和金额');
 
-        const pub = getPubFromPriv(priv);
+        const pub = await getPubFromPriv(priv);
         const ts = Math.floor(Date.now()/1000);
-        const sig = sign(priv, `${sender}${to}${amt}${ts}[]${memo}${pub}`);
+        const amtStr = amt.toFixed(8).replace(/0+$/, '').replace(/\.$/, '');
+        const sig = await sign(priv, `${sender}${to}${amtStr}${ts}[]${memo}${pub}`);
 
         const res = await api('/api/send', 'POST', {
             sender, receiver: to, amount: amt,
@@ -696,6 +758,7 @@
             sender_public_key: pub, signature: sig
         });
         document.getElementById('txResult').textContent = JSON.stringify(res, null, 2);
+        if (res.demoMode) { alert('当前为演示模式，交易未真实发送。'); return; }
         if (!res.error) fetchBalance();
     }
 
@@ -703,20 +766,21 @@
         const txid = document.getElementById('txidToVerify').value.trim();
         if (!txid) return alert('请输入交易ID');
         const priv = getPriv();
-        const addr = priv ? getAddrFromPriv(priv) : '';
+        const addr = priv ? await getAddrFromPriv(priv) : '';
         const res = await api('/api/light/verify', 'POST', { addr, txid });
         document.getElementById('verifyResult').textContent = JSON.stringify(res, null, 2);
     }
 
     async function bindPresale() {
         const priv = getPriv(); if (!priv) return alert('请先创建或导入钱包');
-        const novaAddr = getAddrFromPriv(priv);
+        if (!webcryptoAvailable()) return alert('当前环境不支持 WebCrypto（需要 HTTPS 或 localhost），无法签名');
+        const novaAddr = await getAddrFromPriv(priv);
         const bscAddr = document.getElementById('bscAddress').value.trim();
         if (!bscAddr) return alert('请输入你的BSC地址 (0x...)');
 
         const msg = `BIND_PRESALE:${bscAddr}`;
-        const sig = sign(priv, msg);
-        const pub = getPubFromPriv(priv);
+        const sig = await sign(priv, msg);
+        const pub = await getPubFromPriv(priv);
 
         const res = await api('/api/presale/bind', 'POST', {
             nova_address: novaAddr, nova_public_key: pub,
@@ -728,41 +792,75 @@
     async function deployContract() {
         const res = await api('/api/deploy', 'POST', {
             bytecode: document.getElementById('bytecode').value,
-            creator: getPriv() ? getAddrFromPriv(getPriv()) : ''
+            creator: getPriv() ? await getAddrFromPriv(getPriv()) : ''
         });
         document.getElementById('deployResult').textContent = JSON.stringify(res, null, 2);
     }
 
     async function callContract() {
+        const priv = getPriv(); if (!priv) return alert('请先创建或导入钱包');
+        if (!webcryptoAvailable()) return alert('当前环境不支持 WebCrypto（需要 HTTPS 或 localhost），无法签名');
+        const sender = await getAddrFromPriv(priv);
+        const contract = document.getElementById('contractAddr').value.trim();
+        const amt = parseFloat(document.getElementById('callAmount').value) || 0;
+        const msg = document.getElementById('callMsg').value;
+        if (!contract) return alert('请输入合约地址');
+        if (isNaN(amt) || amt < 0) return alert('金额无效');
+
+        const pub = await getPubFromPriv(priv);
+        const ts = Math.floor(Date.now()/1000);
+        const amtStr = amt.toFixed(8).replace(/0+$/, '').replace(/\.$/, '');
+        const sig = await sign(priv, `${sender}${contract}${amtStr}${ts}[]${msg}${pub}`);
+
         const res = await api('/api/call', 'POST', {
-            sender: getPriv() ? getAddrFromPriv(getPriv()) : '',
-            contract: document.getElementById('contractAddr').value,
-            amount: parseFloat(document.getElementById('callAmount').value) || 0,
-            message: document.getElementById('callMsg').value
+            sender, contract, amount: amt, timestamp: ts,
+            parents: [], message: msg, sender_public_key: pub, signature: sig
         });
         document.getElementById('callResult').textContent = JSON.stringify(res, null, 2);
     }
 
     async function stake() {
+        const priv = getPriv(); if (!priv) return alert('请先创建或导入钱包');
+        if (!webcryptoAvailable()) return alert('当前环境不支持 WebCrypto（需要 HTTPS 或 localhost），无法签名');
+        const addr = await getAddrFromPriv(priv);
+        const amt = parseFloat(document.getElementById('stakeAmount').value) || 100;
+        if (amt > 10000) return alert('单地址质押上限 10000 NOVA');
+        const pub = await getPubFromPriv(priv);
+        const ts = Math.floor(Date.now()/1000);
+        const amtStr = amt.toFixed(8).replace(/0+$/, '').replace(/\.$/, '');
+        const sig = await sign(priv, `${addr}${addr}${amtStr}${ts}[]nova:stake${pub}`);
         const res = await api('/api/stake', 'POST', {
-            addr: getPriv() ? getAddrFromPriv(getPriv()) : '',
-            amount: parseInt(document.getElementById('stakeAmount').value) || 100
+            addr, amount: amt, timestamp: ts, sender_public_key: pub, signature: sig
         });
         document.getElementById('stakeResult').textContent = JSON.stringify(res, null, 2);
+        if (!res.error) queryStakes();
     }
 
     async function unstake() {
-        const res = await api('/api/unstake', 'POST', {
-            addr: getPriv() ? getAddrFromPriv(getPriv()) : ''
-        });
+        const priv = getPriv(); if (!priv) return alert('请先创建或导入钱包');
+        if (!webcryptoAvailable()) return alert('当前环境不支持 WebCrypto（需要 HTTPS 或 localhost），无法签名');
+        const addr = await getAddrFromPriv(priv);
+        const amt = parseFloat(document.getElementById('unstakeAmount').value);
+        if (!amt || amt <= 0) return alert('请输入解押数量');
+        const pub = await getPubFromPriv(priv);
+        const ts = Math.floor(Date.now()/1000);
+        const amtStr = amt.toFixed(8).replace(/0+$/, '').replace(/\.$/, '');
+        const sig = await sign(priv, `${addr}${addr}${amtStr}${ts}[]nova:unstake${pub}`);
+        const res = await api('/api/unstake', 'POST', { addr, amount: amt, timestamp: ts, sender_public_key: pub, signature: sig });
         document.getElementById('unstakeResult').textContent = JSON.stringify(res, null, 2);
+        if (!res.error) queryStakes();
     }
 
     async function claim() {
-        const res = await api('/api/claim', 'POST', {
-            addr: getPriv() ? getAddrFromPriv(getPriv()) : ''
-        });
+        const priv = getPriv(); if (!priv) return alert('请先创建或导入钱包');
+        if (!webcryptoAvailable()) return alert('当前环境不支持 WebCrypto（需要 HTTPS 或 localhost），无法签名');
+        const addr = await getAddrFromPriv(priv);
+        const pub = await getPubFromPriv(priv);
+        const ts = Math.floor(Date.now()/1000);
+        const sig = await sign(priv, `${addr}${addr}0${ts}[]nova:claim${pub}`);
+        const res = await api('/api/claim', 'POST', { addr, timestamp: ts, sender_public_key: pub, signature: sig });
         document.getElementById('claimResult').textContent = JSON.stringify(res, null, 2);
+        if (!res.error) queryStakes();
     }
 
     async function queryStakes() {
@@ -819,7 +917,7 @@
     // ========== 早期激励 ==========
     async function checkin() {
         const priv = getPriv(); if (!priv) return alert('请先创建或导入钱包');
-        const addr = getAddrFromPriv(priv);
+        const addr = await getAddrFromPriv(priv);
         const fingerprint = await getFingerprint();
         const res = await api('/api/checkin', 'POST', { addr, fingerprint });
         document.getElementById('earlyResult').textContent = JSON.stringify(res, null, 2);
@@ -827,9 +925,17 @@
 
     async function queryEarlyInfo() {
         const priv = getPriv(); if (!priv) return alert('请先创建或导入钱包');
-        const addr = getAddrFromPriv(priv);
+        const addr = await getAddrFromPriv(priv);
         const res = await api('/api/early/info?addr=' + addr);
         document.getElementById('earlyResult').textContent = JSON.stringify(res, null, 2);
+    }
+
+    async function unlockAirdrop() {
+        const priv = getPriv(); if (!priv) return alert('请先创建或导入钱包');
+        const addr = await getAddrFromPriv(priv);
+        const res = await api('/api/unlock', 'POST', { addr });
+        document.getElementById('earlyResult').textContent = JSON.stringify(res, null, 2);
+        if (res.unlocked > 0) fetchBalance();
     }
 
     async function getFingerprint() {
@@ -842,10 +948,244 @@
     }
 
     window.onload = async function() {
-        updateUI();
+        await updateUI();
         await initializeEnvironment();
         await refreshDashboard();
     };
+
+/* ================================================================
+   Nova · 未来前沿交互层（纯增强，不影响原有功能逻辑）
+   ================================================================ */
+(function () {
+    'use strict';
+    var reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    /* ---------- Toast 取代原生 alert ---------- */
+    var toastWrap = document.getElementById('toastWrap') || (function () {
+        var t = document.createElement('div');
+        t.id = 'toastWrap';
+        document.body.appendChild(t);
+        return t;
+    })();
+    function showToast(msg) {
+        var box = document.createElement('div');
+        box.className = 'toast';
+        box.textContent = String(msg);
+        toastWrap.appendChild(box);
+        setTimeout(function () { box.classList.add('out'); }, 2600);
+        setTimeout(function () { if (box.parentNode) box.parentNode.removeChild(box); }, 3000);
+    }
+    window.alert = showToast;
+
+    /* ---------- Hero 打字 tagline ---------- */
+    (function () {
+        var el = document.getElementById('tagline');
+        if (!el || !el.dataset.text || reduced) return;
+        var text = el.dataset.text;
+        var cur = document.createElement('span');
+        cur.className = 'cursor';
+        el.innerHTML = '';
+        el.appendChild(cur);
+        var i = 0;
+        (function tick() {
+            if (i <= text.length) {
+                el.textContent = text.slice(0, i);
+                el.appendChild(cur);
+                i += 1;
+                setTimeout(tick, 46);
+            }
+        })();
+    })();
+
+    /* ---------- Canvas 粒子网络（鼠标交互） ---------- */
+    (function () {
+        var cv = document.getElementById('network');
+        if (!cv || reduced) return;
+        var ctx = cv.getContext('2d');
+        var W = 0, H = 0, pts = [];
+        var mouse = { x: -9999, y: -9999 };
+        var count = window.innerWidth < 760 ? 46 : 92;
+        var LINK = 132;
+        function resize() { W = cv.width = window.innerWidth; H = cv.height = window.innerHeight; }
+        function init() {
+            resize();
+            pts = [];
+            for (var i = 0; i < count; i++) {
+                pts.push({
+                    x: Math.random() * W, y: Math.random() * H,
+                    vx: (Math.random() - 0.5) * 0.34, vy: (Math.random() - 0.5) * 0.34,
+                    r: Math.random() * 1.5 + 0.6,
+                    c: Math.random() < 0.28 ? '180,77,255' : '0,240,255'
+                });
+            }
+        }
+        window.addEventListener('resize', resize);
+        window.addEventListener('mousemove', function (e) { mouse.x = e.clientX; mouse.y = e.clientY; }, { passive: true });
+        window.addEventListener('mouseout', function () { mouse.x = -9999; mouse.y = -9999; });
+        function frame() {
+            ctx.clearRect(0, 0, W, H);
+            var i, j, a, b, dx, dy, d, p, alpha;
+            for (i = 0; i < pts.length; i++) {
+                p = pts[i];
+                p.x += p.vx; p.y += p.vy;
+                if (p.x < -20) p.x = W + 20; else if (p.x > W + 20) p.x = -20;
+                if (p.y < -20) p.y = H + 20; else if (p.y > H + 20) p.y = -20;
+                dx = mouse.x - p.x; dy = mouse.y - p.y; d = Math.sqrt(dx * dx + dy * dy);
+                if (d < 170 && d > 0.01) {
+                    var f = ((170 - d) / 170) * 0.09;
+                    p.x += (dx / d) * f * 9; p.y += (dy / d) * f * 9;
+                }
+            }
+            for (i = 0; i < pts.length; i++) {
+                for (j = i + 1; j < pts.length; j++) {
+                    a = pts[i]; b = pts[j];
+                    dx = a.x - b.x; dy = a.y - b.y; d = Math.sqrt(dx * dx + dy * dy);
+                    if (d < LINK) {
+                        alpha = (1 - d / LINK) * 0.15;
+                        ctx.strokeStyle = 'rgba(0,240,255,' + alpha.toFixed(3) + ')';
+                        ctx.lineWidth = 1;
+                        ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+                    }
+                }
+            }
+            for (i = 0; i < pts.length; i++) {
+                p = pts[i];
+                dx = mouse.x - p.x; dy = mouse.y - p.y; d = Math.sqrt(dx * dx + dy * dy);
+                if (d < 190) {
+                    alpha = (1 - d / 190) * 0.4;
+                    ctx.strokeStyle = 'rgba(180,77,255,' + alpha.toFixed(3) + ')';
+                    ctx.lineWidth = 1;
+                    ctx.beginPath(); ctx.moveTo(mouse.x, mouse.y); ctx.lineTo(p.x, p.y); ctx.stroke();
+                }
+            }
+            for (i = 0; i < pts.length; i++) {
+                p = pts[i];
+                ctx.fillStyle = 'rgba(' + p.c + ',0.8)';
+                ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2); ctx.fill();
+            }
+            var mg = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, 90);
+            mg.addColorStop(0, 'rgba(0,240,255,0.10)');
+            mg.addColorStop(1, 'rgba(0,240,255,0)');
+            ctx.fillStyle = mg;
+            ctx.beginPath(); ctx.arc(mouse.x, mouse.y, 90, 0, Math.PI * 2); ctx.fill();
+            requestAnimationFrame(frame);
+        }
+        init();
+        requestAnimationFrame(frame);
+    })();
+
+    /* ---------- 鼠标聚光 + 极光视差 ---------- */
+    (function () {
+        var spot = document.getElementById('spotlight');
+        if (!spot || reduced) return;
+        var orbs = document.querySelectorAll('.orb');
+        var tx = window.innerWidth / 2, ty = window.innerHeight / 3, sx = tx, sy = ty;
+        window.addEventListener('mousemove', function (e) { tx = e.clientX; ty = e.clientY; }, { passive: true });
+        (function loop() {
+            sx += (tx - sx) * 0.08; sy += (ty - sy) * 0.08;
+            spot.style.transform = 'translate(' + (sx - 310).toFixed(1) + 'px,' + (sy - 310).toFixed(1) + 'px)';
+            for (var i = 0; i < orbs.length; i++) {
+                var depth = (i + 1) * 0.012;
+                orbs[i].style.translate = ((tx - window.innerWidth / 2) * depth).toFixed(1) + 'px ' + ((ty - window.innerHeight / 2) * depth).toFixed(1) + 'px';
+            }
+            requestAnimationFrame(loop);
+        })();
+    })();
+    /* ---------- 磁性按钮 ---------- */
+    if (!reduced) {
+        document.querySelectorAll('.magnetic').forEach(function (btn) {
+            btn.addEventListener('mousemove', function (e) {
+                var r = btn.getBoundingClientRect();
+                var dx = e.clientX - (r.left + r.width / 2);
+                var dy = e.clientY - (r.top + r.height / 2);
+                btn.style.transform = 'translate(' + (dx * 0.2).toFixed(1) + 'px,' + (dy * 0.2 - 1).toFixed(1) + 'px)';
+            });
+            btn.addEventListener('mouseleave', function () { btn.style.transform = ''; });
+        });
+    }
+
+    /* ---------- 卡片 3D 倾斜 + 高光 ---------- */
+    if (!reduced) {
+        document.querySelectorAll('[data-tilt]').forEach(function (card) {
+            card.addEventListener('mousemove', function (e) {
+                var r = card.getBoundingClientRect();
+                var px = (e.clientX - r.left) / r.width;
+                var py = (e.clientY - r.top) / r.height;
+                var rx = (0.5 - py) * 8;
+                var ry = (px - 0.5) * 8;
+                card.style.transform = 'perspective(900px) rotateX(' + rx.toFixed(2) + 'deg) rotateY(' + ry.toFixed(2) + 'deg) translateY(-3px)';
+                card.style.setProperty('--mx', (px * 100).toFixed(1) + '%');
+                card.style.setProperty('--my', (py * 100).toFixed(1) + '%');
+            });
+            card.addEventListener('mouseleave', function () { card.style.transform = ''; });
+        });
+    }
+
+    /* ---------- 导航滑动指示器 ---------- */
+    (function () {
+        var nav = document.getElementById('navTabs');
+        var ind = document.querySelector('.nav-indicator');
+        if (!nav || !ind) return;
+        function move() {
+            var active = nav.querySelector('.nav-tab.active');
+            if (!active) return;
+            ind.style.left = active.offsetLeft + 'px';
+            ind.style.width = active.offsetWidth + 'px';
+        }
+        nav.addEventListener('click', function (e) { if (e.target.closest('.nav-tab')) setTimeout(move, 40); });
+        window.addEventListener('resize', move);
+        move();
+    })();
+
+    /* ---------- 数据滚动动画 ---------- */
+    (function () {
+        var animating = new WeakSet();
+        function animateCount(el, raw) {
+            if (animating.has(el)) return;
+            var text = String(raw || '').replace(/,/g, '');
+            if (!/^-?\d+(\.\d+)?$/.test(text)) return;
+            var target = parseFloat(text);
+            if (el.dataset.last === String(target)) return;
+            el.dataset.last = String(target);
+            var decimals = (text.split('.')[1] || '').length;
+            var t0 = performance.now();
+            animating.add(el);
+            (function frame(t) {
+                var k = Math.min((t - t0) / 900, 1);
+                var eased = 1 - Math.pow(1 - k, 3);
+                el.textContent = (target * eased).toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+                if (k < 1) requestAnimationFrame(frame); else animating.delete(el);
+            })(t0);
+        }
+        var obs = new MutationObserver(function (muts) {
+            for (var m = 0; m < muts.length; m++) {
+                var node = muts[m].target;
+                if (node.nodeType === 3 && node.parentElement && node.parentElement.hasAttribute('data-countup')) {
+                    animateCount(node.parentElement, node.data);
+                }
+            }
+        });
+        obs.observe(document.body, { subtree: true, childList: true, characterData: true });
+    })();
+
+    /* ---------- 滚动显现 ---------- */
+    (function () {
+        var els = document.querySelectorAll('.reveal');
+        if (!('IntersectionObserver' in window)) {
+            els.forEach(function (el) { el.classList.add('in'); });
+            return;
+        }
+        var obs = new IntersectionObserver(function (entries) {
+            for (var i = 0; i < entries.length; i++) {
+                if (entries[i].isIntersecting) {
+                    entries[i].target.classList.add('in');
+                    obs.unobserve(entries[i].target);
+                }
+            }
+        }, { threshold: 0.12 });
+        els.forEach(function (el) { obs.observe(el); });
+    })();
+})();
 </script>
 </body>
 </html>
