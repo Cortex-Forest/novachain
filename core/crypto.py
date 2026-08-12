@@ -3,6 +3,9 @@ import os
 
 try:
     import oqs
+    if not hasattr(oqs, "Signature"):
+        # 已安装但版本/构建不兼容的 oqs 视为不可用，回退 Ed25519（与 README 约定一致）
+        oqs = None
 except ModuleNotFoundError:  # pragma: no cover - exercised in environments without oqs
     oqs = None
 

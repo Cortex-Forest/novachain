@@ -33,6 +33,28 @@ class StateStore:
         self.locked_balances: Dict[str, dict] = {}
         self.early_rewards_paid: Set[str] = set()
         self.jailed: Dict[str, float] = {}
+        # 去中心化存储网络状态
+        self.storage_providers: Dict[str, dict] = {}
+        self.storage_claims: Dict[str, dict] = {}
+        self.storage_seals: Dict[str, dict] = {}
+        self.storage_orders: Dict[str, dict] = {}
+        self.storage_rewards: Dict[str, float] = {}
+        # 算力任务市场状态
+        self.compute_tasks: Dict[str, dict] = {}
+        # SocialFi: fan tokens / revenue / achievement / market / blindbox / curation / graph / bond / fraction
+        self.fan_tokens: Dict[str, dict] = {}
+        self.revenue_shares: Dict[str, dict] = {}
+        self.achievements: Dict[str, dict] = {}
+        self.soulbound: Dict[str, dict] = {}
+        self.markets: Dict[str, dict] = {}
+        self.blindboxes: Dict[str, dict] = {}
+        self.blind_reveals: Dict[str, str] = {}
+        self.curations: Dict[str, dict] = {}
+        self.graph_posts: Dict[str, dict] = {}
+        self.graph_follows: Dict[str, list] = {}
+        self.bonds: Dict[str, dict] = {}
+        self.fractions: Dict[str, dict] = {}
+        self.socialfi_events: Dict[str, dict] = {}
 
         self._load_genesis(genesis_file)
     def to_dict(self):
@@ -63,6 +85,26 @@ class StateStore:
             "locked_balances": self.locked_balances,
             "early_rewards_paid": sorted(self.early_rewards_paid),
             "jailed": self.jailed,
+            "storage_providers": self.storage_providers,
+            "storage_claims": self.storage_claims,
+            "storage_seals": self.storage_seals,
+            "storage_orders": self.storage_orders,
+            "storage_rewards": self.storage_rewards,
+            "compute_tasks": self.compute_tasks,
+            "fan_tokens": {k: {**v, "voted": {pk: sorted(pv) for pk, pv in v.get("voted", {}).items()}}
+                             for k, v in self.fan_tokens.items()},
+            "revenue_shares": self.revenue_shares,
+            "achievements": self.achievements,
+            "soulbound": self.soulbound,
+            "markets": self.markets,
+            "blindboxes": self.blindboxes,
+            "blind_reveals": self.blind_reveals,
+            "curations": self.curations,
+            "graph_posts": self.graph_posts,
+            "graph_follows": self.graph_follows,
+            "bonds": self.bonds,
+            "fractions": self.fractions,
+            "socialfi_events": self.socialfi_events,
         }
 
     def from_dict(self, d):
@@ -92,6 +134,40 @@ class StateStore:
         self.locked_balances = dict(d.get("locked_balances", {}))
         self.early_rewards_paid = set(d.get("early_rewards_paid", []))
         self.jailed = {k: float(v) for k, v in d.get("jailed", {}).items()}
+        self.storage_providers = dict(d.get("storage_providers", {}))
+        self.storage_claims = dict(d.get("storage_claims", {}))
+        self.storage_seals = dict(d.get("storage_seals", {}))
+        self.storage_orders = dict(d.get("storage_orders", {}))
+        self.storage_rewards = {k: float(v) for k, v in d.get("storage_rewards", {}).items()}
+        self.compute_tasks = dict(d.get("compute_tasks", {}))
+        self.fan_tokens = {k: {**v, "voted": {pk: set(pv) for pk, pv in v.get("voted", {}).items()}}
+                           for k, v in d.get("fan_tokens", {}).items()}
+        self.revenue_shares = dict(d.get("revenue_shares", {}))
+        self.achievements = dict(d.get("achievements", {}))
+        self.soulbound = dict(d.get("soulbound", {}))
+        self.markets = dict(d.get("markets", {}))
+        self.blindboxes = dict(d.get("blindboxes", {}))
+        self.blind_reveals = dict(d.get("blind_reveals", {}))
+        self.curations = dict(d.get("curations", {}))
+        self.graph_posts = dict(d.get("graph_posts", {}))
+        self.graph_follows = dict(d.get("graph_follows", {}))
+        self.bonds = dict(d.get("bonds", {}))
+        self.fractions = dict(d.get("fractions", {}))
+        self.socialfi_events = dict(d.get("socialfi_events", {}))
+        self.fan_tokens = {k: {**v, "voted": {pk: set(pv) for pk, pv in v.get("voted", {}).items()}}
+                           for k, v in d.get("fan_tokens", {}).items()}
+        self.revenue_shares = dict(d.get("revenue_shares", {}))
+        self.achievements = dict(d.get("achievements", {}))
+        self.soulbound = dict(d.get("soulbound", {}))
+        self.markets = dict(d.get("markets", {}))
+        self.blindboxes = dict(d.get("blindboxes", {}))
+        self.blind_reveals = dict(d.get("blind_reveals", {}))
+        self.curations = dict(d.get("curations", {}))
+        self.graph_posts = dict(d.get("graph_posts", {}))
+        self.graph_follows = dict(d.get("graph_follows", {}))
+        self.bonds = dict(d.get("bonds", {}))
+        self.fractions = dict(d.get("fractions", {}))
+        self.socialfi_events = dict(d.get("socialfi_events", {}))
 
     def save(self, path):
         tmp = path + ".tmp"

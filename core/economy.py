@@ -32,6 +32,10 @@ class Economy:
     ECOSYSTEM_FUND = "0x_ecosystem_fund"
     COMMUNITY_AIRDROP = "0x_community_airdrop"
 
+    # 存储网络奖励参数（生态基金支付）
+    STORAGE_REWARD_PER_GB_PER_DAY = 0.001   # 固定奖励：0.001 NOVA / GB / 天
+    STORAGE_PROOF_REWARD = 0.05             # 每份存储证明奖励 0.05 NOVA
+
     # 早期激励
     EARLY_MINER_REWARD = 1000
     EARLY_LIGHT_REWARD = 100

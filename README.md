@@ -56,7 +56,9 @@ python -c "from core.crypto import QuantumWallet; w = QuantumWallet(); print('�
 - 必须先通过网页绑定 Nova 地址与 BSC 地址
 
 ## 文件结构
-
+- 后端（节点/核心，本地运行）：`nova_node.py`、`core/`、`network/`、`genesis.json`、`run_network.py`、`test_smoke.py`、`test_pos_network.py`、`cert_gen.py`、`requirements.txt`。
+- 前端（Vercel 静态站，独立目录 `../novachain-web/`）：`index.html`（产品落地页）、`nova.html`（交互体验页）、`apps.html`（应用中心）、`socialfi.html`（链上生态）、`404.html`、`vercel.json`、`.nojekyll`、`README_DEPLOY.md`。
+- 部署说明见 `../novachain-web/README_DEPLOY.md`：Vercel 导入目录后即可静态托管全部页面。
 
 ## 安全说明（重要）
 - 未安装 oqs 时，签名自动回退为 Ed25519（RFC 8032，Python 与浏览器 WebCrypto 实现）。Ed25519 **不是**抗量子算法；生产环境必须安装 oqs（pip install oqs）以启用 CRYSTALS-Dilithium5。节点 /api/status 会如实返回当前算法与 quantum_safe 状态。
@@ -94,3 +96,55 @@ python -c "from core.crypto import QuantumWallet; w = QuantumWallet(); print('�
     （本地尽力而为检测，状态随快照同步）。
   - 被惩罚地址在下一 epoch 的质押快照重建时被排除，jail 到期后自动恢复。
 - 集成测试：`python test_pos_network.py`（3 节点：质押收敛 / 每轮唯一当选者出块 / 状态全一致）。
+## 链上新增功能（v0.5）
+
+### 存储网络（存储挖矿）
+创作者内容与 SocialFi 资产（粉丝代币头像 CID、策展封面、社交动态）通过签名交易固定到链上存储网络，真正占用链的存储能力。交易 `data` 为 JSON 字符串，包含 `op` 字段。
+
+| 操作 | 说明 |
+|------|------|
+| `nova:storage:register` | 超级节点注册为存储提供者，声明贡献硬盘容量（单节点上限 1 PB） |
+| `nova:storage:pin` | 创作者固定内容（CID/大小/时长），生态基金按 `STORAGE_REWARD_PER_GB_PER_DAY` 向固定奖励池注入 NOVA |
+| `nova:storage:claim` | 提供者认领 CID（每 CID 最多 10 份），提交哈希链链顶作为密封 |
+| `nova:storage:proof` | 提供者按天提交存储证明（揭示哈希链下一前像），链上验证后发放 `STORAGE_PROOF_REWARD` |
+| `nova:storage:order` | 高级托管订单：支付 NOVA 进入托管，完成证明的提供者按份数平分托管金，到期未发放部分退回 |
+
+- 链上节点无法直接读盘，本实现用哈希链证明作为简化 PoSt；生产环境可将 CID 接入 IPFS，并升级为 Filecoin 风格的真实时空证明（PoSt）。
+- 奖励资金来自**生态基金**（`0x_ecosystem_fund`），与早期空投、预测市场平台费共用同一金库。
+- RPC：`/api/storage/register`、`/api/storage/pin`、`/api/storage/claim`、`/api/storage/proof`、`/api/storage/order`、`/api/storage/pins`、`/api/storage/providers`、`/api/storage/orders`。
+
+### 算力任务市场
+任何节点可发布计算任务并悬赏 NOVA（赏金进链上托管），提供算力的节点抢单计算并提交结果哈希。
+
+| 操作 | 说明 |
+|------|------|
+| `nova:compute:publish` | 发布任务（spec 规格 + 悬赏金 + 有效期） |
+| `nova:compute:accept` | 节点接受任务（每任务最多 8 名工人） |
+| `nova:compute:submit` | 提交结果哈希，双节点冗余验证通过即发放赏金 |
+| 结算 | 任意两个不同节点提交相同结果哈希即视为验证通过，各得一半赏金；任务到期未完成全额退回发起者 |
+
+- 典型场景是 **AIGC 生成与推理**：AI 生成任务在链上发布，由外部算力节点完成并验证。
+- RPC：`/api/compute/publish`、`/api/compute/accept`、`/api/compute/submit`、`/api/compute/tasks`。
+
+### SocialFi：链上生态（10 类玩法）
+全部以签名交易（`sender == receiver`，`data` 为 JSON `{op, ...}`）确定性上链，网页 `socialfi.html` 演示与节点双模式全覆盖。
+
+| 类别 | 玩法 | 核心操作 |
+|------|------|----------|
+| 粉丝经济 | 粉丝代币发行平台 | `nova:fan:issue` / `nova:fan:buy` / `nova:fan:propose` / `nova:fan:vote` |
+| 粉丝经济 | 收益共享合约 | `nova:rev:create` / `nova:rev:invest` / `nova:rev:royalty` / `nova:rev:claim` |
+| 游戏互动 | 链上成就系统（灵魂绑定） | `nova:ach:issue` / `nova:ach:award` |
+| 游戏互动 | 预言机预测市场 | `nova:market:create` / `nova:market:bet` / `nova:market:settle` |
+| 游戏互动 | 可验证随机盲盒 | `nova:blind:create` / `nova:blind:reveal` / `nova:blind:open` |
+| 社交身份 | 去中心化内容策展 | `nova:curate:create` / `nova:curate:buy` |
+| 社交身份 | 社交图谱与推荐引擎 | `nova:graph:post` / `nova:graph:follow` / `nova:graph:like` |
+| 社交身份 | 链上声誉系统 | 实时计算 0-100 信誉分，高信誉（≥80）享 50% 交易费折扣 |
+| 金融投资 | 创作者债券 | `nova:bond:issue` / `nova:bond:buy` / `nova:bond:fund` / `nova:bond:redeem` |
+| 金融投资 | 碎片化 NFT 市场 | `nova:frac:split` / `nova:frac:buy` |
+
+- 内容类玩法携带 CID 时，链自动固定到存储网络，占用链的存储能力。
+- 推荐引擎在链上确定性计算，并输出任务规格，可一键发布为算力市场的计算任务，占用链的算力能力。
+- RPC：`/api/op`、`/api/socialfi/{domain}`、`/api/socialfi/overview`、`/api/reputation/{addr}`、`/api/graph/recommend/{addr}`。
+
+### 测试
+`python test_storage_compute.py` 覆盖存储/算力操作的链上确定性、结算与 RPC；`python test_socialfi.py` 覆盖 10 类 SocialFi 玩法的验证、结算与声誉计算。

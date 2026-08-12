@@ -6,3 +6,8 @@ cert.pem
 key.pem
 *.tmp
 *.bak
+
+.testdeps/
+.coverage
+
+.cov.*
