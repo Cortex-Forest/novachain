@@ -496,6 +496,7 @@ def test_daily_maintenance_accrues_uptime():
     addr = "0xminer"
     node.store.miner_registry[addr] = time.time()
     node.store.miner_uptime[addr] = 269 * 86400
+    node._last_maintenance = time.time() - 86400
     node._run_daily_maintenance()
     assert node.store.miner_uptime[addr] == 270 * 86400
     assert addr in node.store.miner_qualified

@@ -1,3 +1,9 @@
+"""NexLang 编译器：NexLang 源码 -> NexusVM 字节码。
+
+操作码与 core/vm.py 对齐：
+    0x01 PUSH  0x02 STORE  0x03 MUL  0x04 SEND  0x05 RET
+    0x0A ADD   0x0B SUB    0x0C DIV
+"""
 class NexLangCompiler:
     def __init__(self):
         self.bytecode = []
@@ -7,6 +13,11 @@ class NexLangCompiler:
         self.pending_jumps = []
 
     def compile(self, source: str) -> list:
+        self.bytecode = []
+        self.storage_slots = {}
+        self.next_slot = 0
+        self.labels = {}
+        self.pending_jumps = []
         lines = source.strip().split('\n')
         i = 0
         while i < len(lines):
@@ -64,6 +75,12 @@ class NexLangCompiler:
         while i < len(lines):
             line = lines[i]
             if 'let ' in line:
+                var_name = line.split(' ')[1]
+                if '=' in line:
+                    expr = line.split('=')[1].strip().rstrip(';')
+                    self._compile_expression(expr)
+                    self._allocate_slot(var_name)
+                    self._emit(0x02, self.storage_slots[var_name])
                 i += 1
             elif line.startswith('send('):
                 args = line[5:-2].split(',')
@@ -84,7 +101,7 @@ class NexLangCompiler:
         if expr.isdigit():
             self._emit(0x01, int(expr))
         elif expr in self.storage_slots:
-            self._emit(0x01, self.storage_slots[expr])
+            self._emit(0x06, self.storage_slots[expr])  # LOAD 槽值
         elif '*' in expr:
             left, right = expr.split('*')
             self._compile_expression(left.strip())
@@ -94,12 +111,17 @@ class NexLangCompiler:
             left, right = expr.split('/')
             self._compile_expression(left.strip())
             self._compile_expression(right.strip())
-            self._emit(0x03)
+            self._emit(0x0C)
+        elif '+' in expr:
+            left, right = expr.split('+')
+            self._compile_expression(left.strip())
+            self._compile_expression(right.strip())
+            self._emit(0x0A)
         elif '-' in expr:
             left, right = expr.split('-')
             self._compile_expression(left.strip())
             self._compile_expression(right.strip())
-            self._emit(0x03)
+            self._emit(0x0B)
 
     def _allocate_slot(self, name):
         if name not in self.storage_slots:

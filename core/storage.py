@@ -8,6 +8,8 @@ class StateStore:
         self.balances: Dict[str, float] = {}
         self.contracts: Dict[str, str] = {}
         self.contract_creator: Dict[str, str] = {}
+        self.contract_code: Dict[str, list] = {}
+        self.contract_state: Dict[str, dict] = {}
         self.stakes: Dict[str, float] = {}
         self.unbonding: Dict[str, tuple] = {}
         self.dag: Set[str] = set()
@@ -62,6 +64,8 @@ class StateStore:
             "balances": self.balances,
             "contracts": self.contracts,
             "contract_creator": self.contract_creator,
+            "contract_code": self.contract_code,
+            "contract_state": self.contract_state,
             "stakes": self.stakes,
             "unbonding": {k: [v[0], v[1]] for k, v in self.unbonding.items()},
             "dag": sorted(self.dag),
@@ -111,6 +115,8 @@ class StateStore:
         self.balances = {k: float(v) for k, v in d.get("balances", {}).items()}
         self.contracts = dict(d.get("contracts", {}))
         self.contract_creator = dict(d.get("contract_creator", {}))
+        self.contract_code = {k: list(v) for k, v in d.get("contract_code", {}).items()}
+        self.contract_state = dict(d.get("contract_state", {}))
         self.stakes = {k: float(v) for k, v in d.get("stakes", {}).items()}
         self.unbonding = {k: (float(v[0]), float(v[1])) for k, v in d.get("unbonding", {}).items()}
         self.dag = set(d.get("dag", []))
@@ -154,20 +160,7 @@ class StateStore:
         self.bonds = dict(d.get("bonds", {}))
         self.fractions = dict(d.get("fractions", {}))
         self.socialfi_events = dict(d.get("socialfi_events", {}))
-        self.fan_tokens = {k: {**v, "voted": {pk: set(pv) for pk, pv in v.get("voted", {}).items()}}
-                           for k, v in d.get("fan_tokens", {}).items()}
-        self.revenue_shares = dict(d.get("revenue_shares", {}))
-        self.achievements = dict(d.get("achievements", {}))
-        self.soulbound = dict(d.get("soulbound", {}))
-        self.markets = dict(d.get("markets", {}))
-        self.blindboxes = dict(d.get("blindboxes", {}))
-        self.blind_reveals = dict(d.get("blind_reveals", {}))
-        self.curations = dict(d.get("curations", {}))
-        self.graph_posts = dict(d.get("graph_posts", {}))
-        self.graph_follows = dict(d.get("graph_follows", {}))
-        self.bonds = dict(d.get("bonds", {}))
-        self.fractions = dict(d.get("fractions", {}))
-        self.socialfi_events = dict(d.get("socialfi_events", {}))
+
 
     def save(self, path):
         tmp = path + ".tmp"

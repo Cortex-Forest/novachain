@@ -168,7 +168,7 @@ class SocialFi:
         if op == "nova:fan:issue":
             symbol, name = d.get("symbol"), d.get("name")
             supply, price = int(d["supply"]), float(d["price"])
-            tid = "fan_" + _h(f"{addr}{symbol}{name}{time.time()}")[:20]
+            tid = "fan_" + _h(f"{addr}{symbol}{name}{tx.txid}")[:20]
             self.store.fan_tokens[tid] = {
                 "id": tid, "creator": addr, "symbol": symbol, "name": name,
                 "supply": supply, "sold": 0, "price": price,
@@ -260,7 +260,7 @@ class SocialFi:
         op = d.get("op")
         if op == "nova:rev:create":
             name = d["name"]
-            rid = "rev_" + _h(f"{addr}{name}{time.time()}")[:20]
+            rid = "rev_" + _h(f"{addr}{name}{tx.txid}")[:20]
             self.store.revenue_shares[rid] = {
                 "id": rid, "creator": addr, "name": name, "desc": d.get("desc", ""),
                 "investors": {}, "total_invested": 0.0, "pool": 0.0, "created_at": time.time(),
@@ -297,7 +297,7 @@ class SocialFi:
         addr = tx.sender
         if op == "nova:ach:issue":
             title, badge = d.get("title", ""), d.get("badge", "")
-            aid = "ach_" + _h(f"{addr}{title}{time.time()}")[:20]
+            aid = "ach_" + _h(f"{addr}{title}{tx.txid}")[:20]
             if tx.amount != 0 or aid in self.store.achievements:
                 return False
             return (isinstance(title, str) and 0 < len(title) <= NAME_MAX
@@ -317,7 +317,7 @@ class SocialFi:
         op = d.get("op")
         if op == "nova:ach:issue":
             title, badge = d["title"], d["badge"]
-            aid = "ach_" + _h(f"{addr}{title}{time.time()}")[:20]
+            aid = "ach_" + _h(f"{addr}{title}{tx.txid}")[:20]
             self.store.achievements[aid] = {
                 "id": aid, "issuer": addr, "title": title,
                 "desc": d.get("desc", ""), "badge": badge, "created_at": time.time(),
@@ -384,7 +384,7 @@ class SocialFi:
             question, options = d["question"], d["options"]
             closes_in = float(d["closes_in"])
             oracle = d.get("oracle", addr)
-            mid = "mkt_" + _h(f"{addr}{question}{time.time()}")[:20]
+            mid = "mkt_" + _h(f"{addr}{question}{tx.txid}")[:20]
             self.store.markets[mid] = {
                 "id": mid, "creator": addr, "oracle": oracle,
                 "question": question, "options": list(options),
@@ -489,7 +489,7 @@ class SocialFi:
         if op == "nova:blind:create":
             name, commit = d["name"], d["commit"].lower()
             price, tiers = float(d["price"]), d["tiers"]
-            bid = "box_" + _h(f"{addr}{name}{commit}{time.time()}")[:20]
+            bid = "box_" + _h(f"{addr}{name}{commit}{tx.txid}")[:20]
             self.store.blindboxes[bid] = {
                 "id": bid, "creator": addr, "name": name, "price": price,
                 "commit": commit, "tiers": list(tiers), "created_at": time.time(),
@@ -562,7 +562,7 @@ class SocialFi:
         op = d.get("op")
         if op == "nova:curate:create":
             title, items, price = d["title"], d["items"], float(d["price"])
-            cur = "cur_" + _h(f"{addr}{title}{time.time()}")[:20]
+            cur = "cur_" + _h(f"{addr}{title}{tx.txid}")[:20]
             self.store.curations[cur] = {
                 "id": cur, "curator": addr, "title": title, "items": list(items),
                 "price": price, "owners": [addr], "cover_cid": d.get("cid", ""),
@@ -615,7 +615,7 @@ class SocialFi:
         if op == "nova:graph:post":
             content = d.get("content", "")
             cid = d.get("cid", "")
-            pid = "p_" + _h(f"{addr}{content}{time.time()}")[:20]
+            pid = "p_" + _h(f"{addr}{content}{tx.txid}")[:20]
             self.store.graph_posts[pid] = {
                 "id": pid, "addr": addr, "content": content,
                 "cid": cid, "likes": [], "ts": time.time(),
@@ -785,7 +785,7 @@ class SocialFi:
         if op == "nova:bond:issue":
             name, principal, rate, term_days = (d["name"], float(d["principal"]),
                                                 float(d["rate"]), int(d["term_days"]))
-            bid = "bnd_" + _h(f"{addr}{name}{time.time()}")[:20]
+            bid = "bnd_" + _h(f"{addr}{name}{tx.txid}")[:20]
             self.store.bonds[bid] = {
                 "id": bid, "creator": addr, "name": name, "principal": principal,
                 "rate": rate, "term_days": term_days, "sold": {}, "pool": 0.0,
@@ -862,7 +862,7 @@ class SocialFi:
         if op == "nova:frac:split":
             name, nft_ref, supply, price_per = (d["name"], d["nft_ref"],
                                                 int(d["supply"]), float(d["price_per"]))
-            fid = "fr_" + _h(f"{addr}{nft_ref}{time.time()}")[:20]
+            fid = "fr_" + _h(f"{addr}{nft_ref}{tx.txid}")[:20]
             self.store.fractions[fid] = {
                 "id": fid, "owner": addr, "name": name, "nft_ref": nft_ref,
                 "supply": supply, "owner_hold": supply, "price_per": price_per,

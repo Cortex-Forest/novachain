@@ -36,11 +36,19 @@ class ComputeMarket:
             "expires_at": time.time() + float(expires_in),
         }
 
-    def accept(self, worker: str, task_id: str):
-        self.store.compute_tasks[task_id]["accepted"].append(worker)
+    def accept(self, worker: str, task_id: str) -> bool:
+        task = self.store.compute_tasks[task_id]
+        if task["status"] != "open" or worker in task["accepted"]:
+            return False
+        if len(task["accepted"]) >= MAX_WORKERS:
+            return False
+        task["accepted"].append(worker)
+        return True
 
     def submit(self, worker: str, task_id: str, result_hash: str) -> dict:
         task = self.store.compute_tasks[task_id]
+        if task["status"] != "open" or worker not in task["accepted"] or worker in task["results"]:
+            return {"status": task.get("status", "unknown"), "reward": 0.0}
         rh = result_hash.lower()
         task["results"][worker] = rh
         for other, h in task["results"].items():
@@ -49,6 +57,8 @@ class ComputeMarket:
         return {"status": task["status"], "reward": 0.0}
 
     def _complete(self, task: dict, w1: str, w2: str) -> dict:
+        if task.get("status") == "completed":
+            return {"status": "completed", "reward": 0.0, "workers": [w1, w2]}
         task["status"] = "completed"
         each = round(task["bounty"] / 2, 8)
         self.store.balances[w1] = self.store.balances.get(w1, 0) + each

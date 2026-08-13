@@ -44,8 +44,20 @@ class SecurityManager:
         if role == "light" and role_count >= 1: return False
         return True
 
+    MAX_DEVICE_FINGERPRINTS = 100000
+    MAX_CHECKIN_HISTORY = 30
+
     def check_device_unique(self, fingerprint: str) -> bool:
         return fingerprint not in self.device_fingerprints
+
+    def record_device(self, fingerprint: str, addr: str):
+        if fingerprint not in self.device_fingerprints and len(self.device_fingerprints) >= self.MAX_DEVICE_FINGERPRINTS:
+            self.device_fingerprints.pop(next(iter(self.device_fingerprints)))
+        self.device_fingerprints[fingerprint] = addr
+
+    def record_checkin(self, addr: str):
+        self.checkin_history.setdefault(addr, []).append(time.time())
+        self.checkin_history[addr] = self.checkin_history[addr][-self.MAX_CHECKIN_HISTORY:]
 
 
     def snapshot(self):

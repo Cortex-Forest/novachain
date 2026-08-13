@@ -70,7 +70,7 @@ class StorageNetwork:
     # ---------- 固定文件（生态基金注入固定奖励池） ----------
     def pin(self, creator: str, cid: str, size_gb: float, duration_days: float) -> float:
         reward = self.pin_reward(size_gb, duration_days)
-        self.store.balances[self.economy.ECOSYSTEM_FUND] -= reward
+        self.store.balances[self.economy.ECOSYSTEM_FUND] = self.store.balances.get(self.economy.ECOSYSTEM_FUND, 0) - reward
         self.store.storage_claims[cid] = {
             "owner": creator,
             "size_gb": float(size_gb),
@@ -83,19 +83,35 @@ class StorageNetwork:
         return reward
 
     # ---------- 认领 ----------
-    def claim(self, provider: str, cid: str, seal: str):
-        self.store.storage_claims[cid]["providers"].append(provider)
-        self.store.storage_seals[self._seal_key(provider, cid)] = {
+    def claim(self, provider: str, cid: str, seal: str) -> bool:
+        claim = self.store.storage_claims.get(cid)
+        if not claim or time.time() > claim["expires_at"]:
+            return False
+        if provider not in self.store.storage_providers:
+            return False
+        if provider in claim["providers"] or len(claim["providers"]) >= MAX_REPLICAS:
+            return False
+        key = self._seal_key(provider, cid)
+        if key in self.store.storage_seals:
+            return False
+        claim["providers"].append(provider)
+        self.store.storage_seals[key] = {
             "tip": seal.lower(),
             "revealed": 0,
             "length": DEFAULT_CHAIN_LEN,
             "last_proof_day": 0,
         }
+        return True
 
     # ---------- 存储证明（哈希链 PoSt） ----------
     def proof(self, provider: str, cid: str, reveal: str) -> dict:
         key = self._seal_key(provider, cid)
-        seal = self.store.storage_seals[key]
+        seal = self.store.storage_seals.get(key)
+        if not seal:
+            return {"reward": 0.0, "order_pay": 0.0, "error": "未认领"}
+        claim = self.store.storage_claims.get(cid)
+        if not claim or provider not in claim["providers"]:
+            return {"reward": 0.0, "order_pay": 0.0, "error": "非存储提供者"}
         seal["tip"] = reveal.lower()
         seal["revealed"] += 1
         seal["last_proof_day"] = day_index()

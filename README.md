@@ -148,3 +148,21 @@ python -c "from core.crypto import QuantumWallet; w = QuantumWallet(); print('�
 
 ### 测试
 `python test_storage_compute.py` 覆盖存储/算力操作的链上确定性、结算与 RPC；`python test_socialfi.py` 覆盖 10 类 SocialFi 玩法的验证、结算与声誉计算。
+
+
+## 合约虚拟机（NexLang DSL，v0.6）
+- 合约以 NexLang 源码部署（`/api/deploy`，需 creator 签名 `deploy:{addr}:{bytecode}`，同地址限一次），编译为栈式字节码（PUSH/STORE/LOAD/MUL/ADD/SUB/DIV/SEND/RET），由 `core/vm.py` 的 `NexusVM` 执行，10 万步上限防死循环。
+- 示例：`let a = 42 + 1; let b = 7 - 3; let c = 2 * 6; return a;`
+- 调用：`/api/call`（需 sender 签名），合约状态写入 `contract_state`，链上按日发放调用分红（防刷：同 sender/contract 每日一次）。
+- 编译器：`nexlang_compiler.py`（函数体内 `let` 与顶层一致，含槽位分配）；测试见 `test_vm_nexlang.py`。
+
+## 演示模式与前端联动（storage.html / compute.html）
+- `apps-common.js` 演示模式新增 `demoStorageOp`（register/pin/claim/proof/order）与 `demoComputeOp`（publish/accept/submit，双节点一致结算），含守卫、奖励、余额变动、账本与事件，可与真实节点双模式切换。
+- `novachain-web` 新增页面：`storage.html`（我的节点 / 固定 / 认领与证明 / 存储订单 / 提供者）、`compute.html`（发布 / 任务市场 / 我的任务）；`apps.html`、`socialfi.html` 已加入口。
+- 签名方案前后端一致：Ed25519（无 oqs 时）/ Dilithium5（装 oqs 后），前端 WebCrypto 与后端可交叉验签。
+
+## 安全审计与回归
+- 完整审计报告：`docs/AUDIT_2026-08-13.md`（P0×3 / P1×6 / P2×8 + 接口契约）。
+- 回归测试：`test_audit_regressions.py`（P0/P1 修复点）、`test_vm_nexlang.py`（VM/编译器）。
+- 全量测试：`python -m pytest -q`（180 项通过）；端到端 3 节点联调脚本：`scripts/e2e_full.py`（需 `PYTHONPATH` 含依赖目录，37 项通过）。
+- 已知约束：SocialFi 对象 ID 由交易内容确定（不依赖墙钟时间），跨节点状态可收敛一致。

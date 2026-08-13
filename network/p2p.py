@@ -1,6 +1,12 @@
-﻿import asyncio
+import asyncio
 import json
 import ssl
+
+MAX_MSG_BYTES = 64 * 1024 * 1024  # 单条消息上限 64MB（状态快照/大区块）
+
+
+def _enc(msg):
+    return json.dumps(msg, ensure_ascii=False).encode("utf-8") + b"\n"
 
 
 class P2PNetwork:
@@ -30,46 +36,53 @@ class P2PNetwork:
         ctx.verify_mode = ssl.CERT_NONE
         return ctx
 
+    async def _read_message(self, reader):
+        """按换行分帧读取一条消息：先读 hello，再进入监听循环。"""
+        raw = await reader.readuntil(b"\n")
+        return json.loads(raw.strip())
+
     async def start_server(self):
         ssl_ctx = self._create_ssl_context()
-        self.server = await asyncio.start_server(self._handle_connection, self.host, self.port, ssl=ssl_ctx)
+        self.server = await asyncio.start_server(
+            self._handle_connection, self.host, self.port, ssl=ssl_ctx, limit=MAX_MSG_BYTES)
         mode = "TLS 1.3" if ssl_ctx else "明文"
         print(f"[P2P] Nova 监听 {self.host}:{self.port} ({mode})")
 
     async def _handle_connection(self, reader, writer):
         peer = None
         try:
-            data = await reader.read(16384)
-            if data:
-                msg = json.loads(data.decode())
-                if msg.get("type") == "hello":
-                    peer = msg.get("node_id")
-                    if peer:
-                        self.node.peers.add(peer)
-                    writer.write(json.dumps({
-                        "type": "hello",
-                        "node_id": self.node.node_id,
-                        "height": self.node.consensus.chain_height(),
-                        "dag_count": len(self.node.dag),
-                    }).encode())
-                    await writer.drain()
-                    self.connections.add(writer)
-                    asyncio.create_task(self._listen(reader, peer, writer))
-                else:
-                    await self.node.process_message(msg, peer, writer)
+            msg = await self._read_message(reader)
+            if msg.get("type") == "hello":
+                peer = msg.get("node_id")
+                if peer:
+                    self.node.peers.add(peer)
+                writer.write(_enc({
+                    "type": "hello",
+                    "node_id": self.node.node_id,
+                    "height": self.node.consensus.chain_height(),
+                    "dag_count": len(self.node.dag),
+                }))
+                await writer.drain()
+                self.connections.add(writer)
+                asyncio.create_task(self._listen(reader, peer, writer))
+            else:
+                await self.node.process_message(msg, peer, writer)
+        except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, json.JSONDecodeError, ConnectionError):
+            pass
         except Exception:
             pass
 
     async def connect_to_peer(self, addr):
         try:
             h, p = addr.split(":")
-            r, w = await asyncio.open_connection(h, int(p), ssl=self._create_client_ssl_context())
-            w.write(json.dumps({
+            r, w = await asyncio.open_connection(h, int(p), ssl=self._create_client_ssl_context(),
+                                                  limit=MAX_MSG_BYTES)
+            w.write(_enc({
                 "type": "hello",
                 "node_id": self.node.node_id,
                 "height": self.node.consensus.chain_height(),
                 "dag_count": len(self.node.dag),
-            }).encode())
+            }))
             await w.drain()
             self.connections.add(w)
             self.node.peers.add(addr)
@@ -80,10 +93,10 @@ class P2PNetwork:
     async def _listen(self, reader, peer, writer):
         try:
             while True:
-                data = await reader.read(16384)
-                if not data:
-                    break
-                await self.node.process_message(json.loads(data.decode()), peer, writer)
+                msg = await self._read_message(reader)
+                await self.node.process_message(msg, peer, writer)
+        except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, json.JSONDecodeError, ConnectionError):
+            pass
         except Exception:
             pass
         finally:
@@ -112,8 +125,9 @@ class P2PNetwork:
                 continue
             try:
                 h, port = p.split(":")
-                _, w = await asyncio.open_connection(h, int(port), ssl=self._create_client_ssl_context())
-                w.write(json.dumps(msg).encode())
+                _, w = await asyncio.open_connection(h, int(port), ssl=self._create_client_ssl_context(),
+                                                     limit=MAX_MSG_BYTES)
+                w.write(_enc(msg))
                 await w.drain()
                 w.close()
             except Exception:

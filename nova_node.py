@@ -5,7 +5,8 @@ from aiohttp import web
 from core.crypto import QuantumWallet, verify_quantum_tx, QUANTUM_SAFE
 from core.blockchain import Block
 from core.transaction import Tx
-from core.vm import deploy_address
+from core.vm import deploy_address, NexusVM
+from nexlang_compiler import NexLangCompiler
 from core.consensus import ConsensusEngine
 from core.storage import StateStore
 from core.economy import Economy
@@ -329,7 +330,7 @@ class NovaNode:
             self.balances[self.economy.VALIDATOR_POOL] = 0
             self.economy.distribute(pool)
 
-        if tx.receiver in self.contracts:
+        if tx.receiver in self.contracts and tx.sender != "0x0000":
             creator = self.store.contract_creator.get(tx.receiver)
             cr = self.economy.call_reward()
             today = time.strftime("%Y-%m-%d")
@@ -340,6 +341,20 @@ class NovaNode:
                 self.balances[creator] = self.balances.get(creator, 0) + cr
                 self.store.call_reward_dates[reward_key] = today
                 self.store.call_count += 1
+            code = self.store.contract_code.get(tx.receiver)
+            if not code:
+                try:
+                    code = NexLangCompiler().compile(self.contracts[tx.receiver])
+                    self.store.contract_code[tx.receiver] = code
+                except Exception:
+                    code = []
+            if code:
+                try:
+                    vm = NexusVM(code)
+                    vm.run(msg=tx.data, amount=tx.amount, sender=tx.sender,
+                           storage=self.store.contract_state.setdefault(tx.receiver, {}))
+                except Exception:
+                    pass
 
         if old_balance == 0 and tx.amount > 0:
             if tx.receiver in self.store.referrals and tx.receiver not in self.store.referral_claimed:
@@ -381,7 +396,7 @@ class NovaNode:
                 await self.p2p.gossip(msg, exclude=[peer])
         elif mtype == "state_request":
             if writer is not None:
-                writer.write(json.dumps({"type": "state_snapshot", "snapshot": self.full_snapshot()}).encode())
+                writer.write(json.dumps({"type": "state_snapshot", "snapshot": self.full_snapshot()}).encode() + b"\n")
                 await writer.drain()
         elif mtype == "state_snapshot":
             snap = msg.get("snapshot", {})
@@ -448,8 +463,12 @@ class NovaNode:
                 print(f"[MAINT] 维护失败: {e}")
 
     def _run_daily_maintenance(self):
+        now = time.time()
+        last = getattr(self, "_last_maintenance", None)
+        delta = min(now - last, 86400) if last else 0.0
+        self._last_maintenance = now
         for addr in list(self.store.miner_registry):
-            self.store.miner_uptime[addr] = self.store.miner_uptime.get(addr, 0) + 86400
+            self.store.miner_uptime[addr] = self.store.miner_uptime.get(addr, 0) + delta
             if self.store.miner_uptime[addr] >= 270 * 86400:
                 self.store.miner_qualified.add(addr)
         self.storage_net.settle_expired()
@@ -525,11 +544,26 @@ class NovaNode:
         b = await self._read_json(req)
         if not isinstance(b, dict) or not b.get("bytecode"):
             return web.json_response({"error":"缺少 bytecode"}, status=400)
-        addr = deploy_address(b["bytecode"])
-        creator = b.get("creator","")
-        tx = Tx("0x0000", addr, 0, [], b["bytecode"])
+        bytecode = str(b["bytecode"])
+        if not bytecode or len(bytecode) > self.security.MAX_CONTRACT_SIZE:
+            return web.json_response({"error":"bytecode 无效或过大"}, status=400)
+        addr = deploy_address(bytecode)
+        creator = b.get("creator", "")
+        if creator:
+            sig_msg = "deploy:{0}:{1}".format(addr, bytecode)
+            if not verify_quantum_tx(sig_msg, b.get("signature", ""),
+                                     b.get("sender_public_key", ""), creator):
+                return web.json_response({"error":"creator 签名验证失败"}, status=400)
+            if creator in self.store.contract_creator.values():
+                return web.json_response({"error":"该地址已有合约"}, status=400)
+        tx = Tx("0x0000", addr, 0, [], bytecode)
         self.store.dag.add(tx.txid)
-        self.store.contracts[addr] = b["bytecode"]
+        self.store.contracts[addr] = bytecode
+        try:
+            compiled = NexLangCompiler().compile(bytecode)
+        except Exception:
+            compiled = []
+        self.store.contract_code[addr] = compiled
         rwd = 0
         if creator:
             self.store.contract_creator[addr] = creator
@@ -712,7 +746,7 @@ class NovaNode:
 
         self.store.light_checkin_dates[addr].add(today)
         self.store.light_checkins[addr] = len(self.store.light_checkin_dates[addr])
-        self.security.checkin_history.setdefault(addr, []).append(time.time())
+        self.security.record_checkin(addr)
 
         if addr not in self.store.early_airdrop_received:
             active_light = sum(1 for a in self.store.light_checkins if self.store.light_checkins[a] > 0)
@@ -721,7 +755,7 @@ class NovaNode:
 
         self.security.ip_registry.setdefault(ip, {})[f"light_{addr}"] = time.time()
         if fingerprint:
-            self.security.device_fingerprints[fingerprint] = addr
+            self.security.record_device(fingerprint, addr)
 
         if self.store.light_checkins[addr] >= 270:
             self.store.light_qualified.add(addr)
@@ -804,6 +838,21 @@ class NovaNode:
         if not isinstance(b, dict): return web.json_response({"error": "请求体不是合法 JSON"}, status=400)
         addr = b.get("addr", "")
         ids = b.get("ids", [])
+        if not ADDRESS_RE.match(addr):
+            return web.json_response({"error": "地址格式无效"}, status=400)
+        if not isinstance(ids, list) or not ids:
+            return web.json_response({"error": "ids 无效"}, status=400)
+        for mid in ids:
+            if not isinstance(mid, str) or len(mid) != 48:
+                return web.json_response({"error": "ids 格式无效"}, status=400)
+            try:
+                int(mid, 16)
+            except ValueError:
+                return web.json_response({"error": "ids 格式无效"}, status=400)
+        sig_msg = "ack:" + addr + ":" + json.dumps(sorted(set(ids)))
+        if not verify_quantum_tx(sig_msg, b.get("signature", ""),
+                                 b.get("sender_public_key", ""), addr):
+            return web.json_response({"error": "签名验证失败"}, status=400)
         removed = self.chat.ack(addr, ids)
         return web.json_response({"removed": removed})
 

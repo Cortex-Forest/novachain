@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import tempfile
 import time
@@ -176,8 +177,16 @@ async def test_rpc_chat_send_inbox_ack():
         assert body["messages"] == []
 
         # ack 后清除
-        resp = await client.post("/api/chat/ack", json={"addr": bob.address, "ids": [mid]})
+        ack_sig = "ack:" + bob.address + ":" + json.dumps(sorted(set([mid])))
+        resp = await client.post("/api/chat/ack", json={
+            "addr": bob.address, "ids": [mid],
+            "sender_public_key": bob.public_key_hex(),
+            "signature": bob.sign(ack_sig),
+        })
         assert (await resp.json())["removed"] == 1
+        # 无签名 ack -> 拒绝
+        resp = await client.post("/api/chat/ack", json={"addr": bob.address, "ids": [mid]})
+        assert resp.status == 400
         resp = await client.get("/api/chat/inbox/" + bob.address)
         assert (await resp.json())["messages"] == []
 

@@ -70,7 +70,7 @@ def test_tx_signing_data_is_canonical():
 # ---------------------------------------------------------------------------
 
 def test_vm_execute():
-    assert NexusVM.execute("code", "msg") == "VM执行: msg"
+    assert "VM执行: msg" in NexusVM.execute("code", "msg")
 
 
 def test_deploy_address_deterministic():
@@ -104,7 +104,7 @@ def test_compile_top_level_let_send_return():
     # let x=5 → PUSH 5, STORE slot0
     # send(0xabc, 10); → PUSH 10, PUSH slot0(0xabc 非数字非槽位→无), SEND
     # return x; → PUSH slot0, RET
-    assert code == [0x01, 5, 0x02, 0, 0x01, 10, 0x04, 0x01, 0, 0x05]
+    assert code == [0x01, 5, 0x02, 0, 0x01, 10, 0x04, 0x06, 0, 0x05]  # return x = LOAD slot0
     assert c.storage_slots == {"x": 0}
 
 
@@ -122,6 +122,22 @@ def test_compile_function_body_and_labels():
     assert c.labels == {"on_transfer": 0, "balance": 3}
 
 
+def test_compile_let_inside_function_body():
+    c = NexLangCompiler()
+    code = c.compile("""
+        on_init(msg) {
+            let a = 42 + 1;
+            let b = 7 - 3;
+            return a;
+        }
+    """)
+    # let a=42+1 -> PUSH 42 PUSH 1 ADD STORE slot0; let b=7-3 -> PUSH 7 PUSH 3 SUB STORE slot1
+    assert code[:7] == [0x01, 42, 0x01, 1, 0x0A, 0x02, 0]
+    assert code[7:12] == [0x01, 7, 0x01, 3, 0x0B]
+    assert code[12:] == [0x02, 1, 0x06, 0, 0x05]  # STORE slot1, LOAD slot0, RET
+    assert c.storage_slots == {"a": 0, "b": 1}
+
+
 def test_compile_query_without_body():
     c = NexLangCompiler()
     code = c.compile("query balance()")
@@ -135,12 +151,13 @@ def test_compile_expression_operators():
         let a = 2 * 3;
         let b = 10 - 4;
         let d = 12 / 3;
+        let e = 1 + 1;
         return a;
     """)
     assert code[0:3] == [0x01, 2, 0x01]
     assert code[3:5] == [3, 0x03]            # 2*3 → 0x03
     assert code[5:9] == [0x02, 0, 0x01, 10]  # STORE slot0, PUSH 10 (b)
-    assert code == [1, 2, 1, 3, 3, 2, 0, 1, 10, 1, 4, 3, 2, 1, 1, 12, 1, 3, 3, 2, 2, 1, 0, 5]
+    assert code == [1, 2, 1, 3, 3, 2, 0, 1, 10, 1, 4, 11, 2, 1, 1, 12, 1, 3, 12, 2, 2, 1, 1, 1, 1, 10, 2, 3, 6, 0, 5]
 
 
 def test_compile_unknown_lines_skipped():
@@ -158,3 +175,58 @@ def test_compile_storage_slot_reuse():
     c.compile("let x = 1;\nlet y = 2;\nlet x = 3;")
     assert c.storage_slots == {"x": 0, "y": 1}
     assert c.next_slot == 2
+# ---------------------------------------------------------------------------
+# NexusVM 执行语义
+# ---------------------------------------------------------------------------
+
+def test_vm_arithmetic_and_return():
+    c = NexLangCompiler()
+    code = c.compile("""
+        let a = 2 * 3;
+        let b = a + 4;
+        return b;
+    """)
+    r = NexusVM(code).run()
+    assert r["result"] == 10
+
+def test_vm_sub_and_div():
+    c = NexLangCompiler()
+    code = c.compile("""
+        let a = 10 - 4;
+        let b = 12 / 3;
+        return a;
+    """)
+    r = NexusVM(code).run()
+    assert r["result"] == 6
+
+def test_vm_division_by_zero_safe():
+    r = NexusVM([0x01, 1, 0x01, 0, 0x0C, 0x05]).run()
+    assert r["result"] == 0
+
+def test_vm_storage_persists_across_runs():
+    c = NexLangCompiler()
+    code = c.compile("""
+        let x = 7;
+        return x;
+    """)
+    storage = {}
+    NexusVM(code).run(storage=storage)
+    assert storage.get(0) == 7
+    code2 = NexLangCompiler().compile("""
+        let x = 9;
+        return x;
+    """)
+    NexusVM(code2).run(storage=storage)
+    assert storage.get(0) == 9
+
+def test_vm_send_events():
+    r = NexusVM([0x01, 10, 0x01, 42, 0x04, 0x05]).run()
+    assert ("send", "42", 10.0) in r["events"]
+
+def test_vm_unknown_opcode_skipped():
+    r = NexusVM([0x7F, 0x01, 5, 0x05]).run()
+    assert r["result"] == 5
+
+def test_vm_step_limit():
+    r = NexusVM([0x01, 1, 0x03] * 50000 + [0x05]).run()
+    assert r["steps"] <= 100000

@@ -278,9 +278,11 @@ def test_consensus_persisted():
 def test_daily_maintenance_accrues_uptime():
     node = NovaNode(host="127.0.0.1", p2p=9929, rpc=8099, use_tls=False, state_file=None)
     node.store.miner_registry["0xminer2"] = time.time()
+    node._last_maintenance = time.time() - 86400
     node._run_daily_maintenance()
     assert node.store.miner_uptime["0xminer2"] == 86400
     node.store.miner_uptime["0xminer2"] = 270 * 86400 - 1
+    node._last_maintenance = time.time() - 86400
     node._run_daily_maintenance()
     assert "0xminer2" in node.store.miner_qualified
 

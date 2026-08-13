@@ -13,6 +13,7 @@ from core.blockchain import Block
 from core.crypto import QuantumWallet
 from core.economy import Economy
 from core.transaction import Tx
+from core.vm import deploy_address
 from network.p2p import P2PNetwork
 from network.rpc import setup_routes
 from network.security import SecurityManager
@@ -363,15 +364,26 @@ async def test_rpc_balance_and_status():
 async def test_rpc_deploy_and_call():
     node = _node()
     node.balances[Economy.ECOSYSTEM_FUND] = 100
+    creator = QuantumWallet()
+    bytecode = "code123"
     async with await _make_client(node) as client:
-        resp = await client.post("/api/deploy", json={"bytecode": "code123", "creator": "0xcreator"})
+        sig_msg = "deploy:{0}:{1}".format(deploy_address(bytecode), bytecode)
+        resp = await client.post("/api/deploy", json={
+            "bytecode": bytecode, "creator": creator.address,
+            "sender_public_key": creator.public_key_hex(),
+            "signature": creator.sign(sig_msg),
+        })
         assert resp.status == 200, await resp.text()
         body = await resp.json()
         assert body["contract"].startswith("0x")
         assert body["reward"] == Economy.INIT_DEPLOY_REWARD
         assert body["contract"] in node.contracts
         assert node.store.deploy_count == 1
-        assert node.balances["0xcreator"] == pytest.approx(Economy.INIT_DEPLOY_REWARD + Economy.INIT_CALL_REWARD)
+        assert node.balances[creator.address] == pytest.approx(Economy.INIT_DEPLOY_REWARD)
+
+        # 未签名部署 -> 拒绝
+        resp = await client.post("/api/deploy", json={"bytecode": bytecode, "creator": creator.address})
+        assert resp.status == 400
 
         resp = await client.post("/api/deploy", json={})
         assert resp.status == 400
