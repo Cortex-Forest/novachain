@@ -17,7 +17,7 @@ from core.storage_network import (StorageNetwork, CID_RE, HEX64_RE, MAX_REPLICAS
                                   MIN_DURATION_DAYS, MAX_DURATION_DAYS, day_index)
 from core.compute import (ComputeMarket, RESULT_HASH_RE, MAX_WORKERS, MAX_SPEC_LEN,
                           MIN_EXPIRES, MAX_EXPIRES)
-from core.socialfi import SocialFi
+from core.socialfi import SocialFi, TEXT_ESCROW
 from network.p2p import P2PNetwork
 from network.rpc import setup_routes
 from network.security import SecurityManager
@@ -271,6 +271,27 @@ class NovaNode:
         except Exception:
             return self.economy.FIXED_GAS
 
+    def _record_tx(self, tx: Tx):
+        """Record a confirmed tx into the local ledger (idempotent by txid)."""
+        if tx.txid in self.store.tx_history:
+            return
+        if tx.sender == "0x0000":
+            gas = 0.0
+        elif self._is_stake_op(tx) or self._is_storage_op(tx) or self._is_compute_op(tx) or self._is_socialfi_op(tx):
+            gas = self.gas_of(tx.sender)
+        else:
+            gas = self.economy.FIXED_GAS
+        self.store.tx_history[tx.txid] = {
+            "txid": tx.txid,
+            "sender": tx.sender,
+            "receiver": tx.receiver,
+            "amount": tx.amount,
+            "gas": gas,
+            "data": tx.data,
+            "ts": tx.timestamp,
+            "confirmed_at": time.time(),
+        }
+
     def _is_stake_op(self, tx: Tx) -> bool:
         return tx.data in self.STAKE_OPS and tx.sender == tx.receiver
 
@@ -371,6 +392,7 @@ class NovaNode:
             self.security.mark_processed(tx.txid)
             self.store.dag.add(tx.txid)
             self.apply_tx(tx)
+            self._record_tx(tx)
             await self.p2p.gossip({"type":"new_tx","tx":tx.to_dict()})
 
     async def process_message(self, msg, peer, writer=None):
@@ -381,6 +403,7 @@ class NovaNode:
                 self.security.mark_processed(tx.txid)
                 self.store.dag.add(tx.txid)
                 self.apply_tx(tx)
+                self._record_tx(tx)
                 await self.p2p.gossip(msg, exclude=[peer])
         elif mtype == "hello":
             peer_id = msg.get("node_id")
@@ -597,6 +620,43 @@ class NovaNode:
         a = req.match_info['addr']
         return web.json_response({"addr":a,"balance":self.balances.get(a,0)})
 
+    async def rpc_txs(self, req):
+        """List confirmed txs for an address (local ledger, newest first)."""
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        addr = req.match_info['addr']
+        if not ADDRESS_RE.match(addr):
+            return web.json_response({"error": "地址格式无效"}, status=400)
+        items = [(i, v) for i, v in enumerate(self.store.tx_history.values())
+                 if v["sender"] == addr or v["receiver"] == addr]
+        items.sort(key=lambda iv: (iv[1].get("ts", 0), iv[0]), reverse=True)
+        return web.json_response({"addr": addr, "txs": [v for _, v in items]})
+
+    async def rpc_tx(self, req):
+        """Fetch a single confirmed tx by txid."""
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        entry = self.store.tx_history.get(req.match_info['txid'])
+        if not entry:
+            return web.json_response({"error": "交易不存在或尚未上链"}, status=404)
+        return web.json_response(entry)
+
+    async def rpc_contract(self, req):
+        """查询地址是否为合约（用于钱包转账前的恶意合约风险提示）。"""
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        addr = req.match_info['addr']
+        if not ADDRESS_RE.match(addr):
+            return web.json_response({"error": "地址格式无效"}, status=400)
+        if addr not in self.store.contracts:
+            return web.json_response({"addr": addr, "is_contract": False})
+        return web.json_response({
+            "addr": addr,
+            "is_contract": True,
+            "creator": self.store.contract_creator.get(addr) or "0x0000",
+            "code_size": len(self.store.contracts.get(addr, "")),
+        })
+
     def _stake_tx(self, b, data, amt=0):
         """构造质押类签名交易（sender==receiver，data 为 nova:stake/unstake/claim）。"""
         try:
@@ -766,11 +826,15 @@ class NovaNode:
         guard = await self._rpc_guard(req)
         if guard: return guard
         addr = req.query.get("addr","")
+        lock = self.store.locked_balances.get(addr, {})
         return web.json_response({
             "miner_registered": addr in self.store.miner_registry,
             "miner_uptime_days": self.store.miner_uptime.get(addr, 0) / 86400,
             "light_checkin_days": self.store.light_checkins.get(addr, 0),
-            "locked_balance": self.store.locked_balances.get(addr, {}).get("amount", 0),
+            "locked_balance": lock.get("amount", 0),
+            "lock_start_time": lock.get("start_time", 0),
+            "lock_unlocked": lock.get("unlocked", 0),
+            "referral_count": sum(1 for inv in self.store.referrals.values() if inv == addr),
             "miner_qualified": addr in self.store.miner_qualified,
             "light_qualified": addr in self.store.light_qualified,
         })
@@ -1064,6 +1128,13 @@ class NovaNode:
             "graph": {"posts": self.store.graph_posts, "follows": self.store.graph_follows},
             "bond": self.store.bonds,
             "fraction": self.store.fractions,
+            "text": {"assets": self.store.text_assets,
+                     "contract_pubkey": self.socialfi.text_contract_pubkey(),
+                     "deposit_tiers": {"basic": self.socialfi.text_deposit_required("basic"),
+                                       "advanced": self.socialfi.text_deposit_required("advanced"),
+                                       "pro": self.socialfi.text_deposit_required("pro")},
+                     "reputation": self.store.text_reputation,
+                     "escrow": self.store.balances.get(TEXT_ESCROW, 0)},
             "events": sorted(self.store.socialfi_events.values(), key=lambda e: e.get("ts", 0), reverse=True)[:50],
         }
         if domain not in m:
@@ -1084,9 +1155,17 @@ class NovaNode:
             "follows": sum(len(v) for v in self.store.graph_follows.values()),
             "bonds": len(self.store.bonds),
             "fractions": len(self.store.fractions),
+            "text_assets": len(self.store.text_assets),
+            "text_escrow": self.store.balances.get(TEXT_ESCROW, 0),
             "events": len(self.store.socialfi_events),
             "graph_hash": self.socialfi.graph_hash(),
         })
+
+    async def rpc_text_key(self, req):
+        """返回文本合约公钥：作者用它锁定密文正文密钥，购买后合约二次加密给买家。"""
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        return web.json_response({"public_key": self.socialfi.text_contract_pubkey()})
 
     async def rpc_reputation(self, req):
         guard = await self._rpc_guard(req)

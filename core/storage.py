@@ -13,6 +13,7 @@ class StateStore:
         self.stakes: Dict[str, float] = {}
         self.unbonding: Dict[str, tuple] = {}
         self.dag: Set[str] = set()
+        self.tx_history: Dict[str, dict] = {}
         self.deploy_count = 0
         self.referral_issued = 0
         self.call_count = 0
@@ -56,6 +57,10 @@ class StateStore:
         self.graph_follows: Dict[str, list] = {}
         self.bonds: Dict[str, dict] = {}
         self.fractions: Dict[str, dict] = {}
+        # 文本创作合约：公开/密文文本资产、作者信誉分、合约密钥对
+        self.text_assets: Dict[str, dict] = {}
+        self.text_reputation: Dict[str, float] = {}
+        self.text_contract_priv: str = ""
         self.socialfi_events: Dict[str, dict] = {}
 
         self._load_genesis(genesis_file)
@@ -69,6 +74,7 @@ class StateStore:
             "stakes": self.stakes,
             "unbonding": {k: [v[0], v[1]] for k, v in self.unbonding.items()},
             "dag": sorted(self.dag),
+            "tx_history": self.tx_history,
             "deploy_count": self.deploy_count,
             "referral_issued": self.referral_issued,
             "call_count": self.call_count,
@@ -108,6 +114,9 @@ class StateStore:
             "graph_follows": self.graph_follows,
             "bonds": self.bonds,
             "fractions": self.fractions,
+            "text_assets": self.text_assets,
+            "text_reputation": self.text_reputation,
+            "text_contract_priv": self.text_contract_priv,
             "socialfi_events": self.socialfi_events,
         }
 
@@ -120,6 +129,7 @@ class StateStore:
         self.stakes = {k: float(v) for k, v in d.get("stakes", {}).items()}
         self.unbonding = {k: (float(v[0]), float(v[1])) for k, v in d.get("unbonding", {}).items()}
         self.dag = set(d.get("dag", []))
+        self.tx_history = dict(d.get("tx_history", {}))
         self.deploy_count = d.get("deploy_count", 0)
         self.referral_issued = d.get("referral_issued", 0)
         self.call_count = d.get("call_count", 0)
@@ -159,6 +169,9 @@ class StateStore:
         self.graph_follows = dict(d.get("graph_follows", {}))
         self.bonds = dict(d.get("bonds", {}))
         self.fractions = dict(d.get("fractions", {}))
+        self.text_assets = dict(d.get("text_assets", {}))
+        self.text_reputation = {k: float(v) for k, v in d.get("text_reputation", {}).items()}
+        self.text_contract_priv = str(d.get("text_contract_priv", ""))
         self.socialfi_events = dict(d.get("socialfi_events", {}))
 
 

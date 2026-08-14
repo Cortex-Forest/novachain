@@ -11,7 +11,8 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from core.crypto import QuantumWallet
+from core.crypto import (QuantumWallet, TEXT_CRYPTO_OK, text_ecies_decrypt,
+                          text_ecies_encrypt, text_gen_p256_keypair)
 from core.transaction import Tx
 from network.rpc import setup_routes
 from nova_node import NovaNode
@@ -450,5 +451,288 @@ async def test_socialfi_rpc_endpoints():
         resp = await client.get("/api/graph/recommend/" + wallet.address)
         rec = await resp.json()
         assert "task_spec" in rec and "graph_hash" in rec
+    finally:
+        await client.close()
+
+
+# ---------------------------------------------------------------------------
+# 11. 文本创作合约：公开 / 加密发布、购买解锁、保证金与仲裁
+# ---------------------------------------------------------------------------
+def _text_cipher_data(body: str, k_hex: str) -> str:
+    """用 K（AES-256-GCM）把正文加密成内联密文 envelope（演示用）。"""
+    import os
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    iv = os.urandom(12)
+    ct = AESGCM(bytes.fromhex(k_hex)).encrypt(iv, body.encode("utf-8"), None)
+    return json.dumps({"v": 1, "tag": "nova-text-aes256-gcm", "iv": iv.hex(), "ct": ct.hex()})
+
+
+def _sealed_payload(node, title, price=1.0):
+    """构造密文发布参数：正文密钥 K 锁定到文本合约公钥，正文密文内联。"""
+    pub = node.socialfi.text_contract_pubkey()
+    k = hashlib.sha3_256(("key:" + title).encode()).hexdigest()
+    kc = text_ecies_encrypt(pub, k, ("create:" + title).encode())
+    return {"key_cipher": kc, "cipher_data": _text_cipher_data("秘密正文：" + title, k)}
+
+
+def test_text_public_publish_free_buy_and_deposit_release():
+    node = _node()
+    author = QuantumWallet()
+    reader = QuantumWallet()
+    _fund(node, author.address)
+    _fund(node, reader.address)
+
+    _apply(node, _signed_tx(author, "nova:text:create", amount=10,
+                            title="公开散文", visibility="public", price=0,
+                            content="星星落进湖里，湖面没有涟漪。"))
+    tid = next(iter(node.store.text_assets))
+    a = node.store.text_assets[tid]
+    assert a["visibility"] == "public" and a["status"] == "listed"
+    assert a["deposit"] == 10.0
+    assert node.balances["0x_text_escrow"] == pytest.approx(10.0)
+    assert node.balances[author.address] == pytest.approx(100000.0 - 10.0)
+
+    # 免费公开文本：reader 可直接收藏（buy amount=0）
+    _apply(node, _signed_tx(reader, "nova:text:buy", text_id=tid))
+    assert reader.address in a["buyers"]
+
+    # 未下架前不能退保证金
+    assert not node.validate_tx(_signed_tx(author, "nova:text:release_deposit", text_id=tid))
+    _apply(node, _signed_tx(author, "nova:text:unlist", text_id=tid))
+    assert a["status"] == "unlisted"
+    # 7 天冷却未到不能退
+    assert not node.validate_tx(_signed_tx(author, "nova:text:release_deposit", text_id=tid))
+    a["releasable_at"] = time.time() - 1
+    _apply(node, _signed_tx(author, "nova:text:release_deposit", text_id=tid))
+    assert a["deposit_released"] is True
+    assert node.balances["0x_text_escrow"] == pytest.approx(0.0)
+    assert node.balances[author.address] == pytest.approx(100000.0)
+
+
+def test_text_sealed_buy_key_unlock_and_royalty_split():
+    node = _node()
+    author = QuantumWallet()
+    buyer = QuantumWallet()
+    _fund(node, author.address)
+    _fund(node, buyer.address)
+    _fund_eco(node)
+
+    _apply(node, _signed_tx(author, "nova:text:create", amount=10,
+                            title="密信", visibility="sealed", price=5,
+                            identifier="SECRET-001", **_sealed_payload(node, "密信")))
+    tid = next(iter(node.store.text_assets))
+    a = node.store.text_assets[tid]
+    assert a["identifier"] == "SECRET-001"
+    assert a["content"] == "" and a["cipher_data"] and a["key_cipher"]
+
+    # 公开列表只暴露标题/标识符/价格，不暴露密文正文
+    pub_view = {k: v for k, v in a.items() if k not in ("cipher_data", "key_cipher", "keys")}
+    assert pub_view["title"] == "密信" and pub_view["price"] == 5.0
+
+    author_bal0 = node.balances[author.address]
+    eco0 = node.balances[node.economy.ECOSYSTEM_FUND]
+    buyer_priv, buyer_pub = text_gen_p256_keypair(b"buyer-" + buyer.address.encode())
+    _apply(node, _signed_tx(buyer, "nova:text:buy", amount=5, text_id=tid, buyer_pub=buyer_pub))
+    assert buyer.address in a["buyers"]
+    assert node.balances[author.address] == pytest.approx(author_bal0 + 4.5)   # 90%
+    assert node.balances[node.economy.ECOSYSTEM_FUND] == pytest.approx(eco0 + 0.5)  # 10%
+    # 合约把正文密钥二次加密给买家，买家私钥可解开得到 K
+    k = text_ecies_decrypt(buyer_priv, a["keys"][buyer.address])
+    assert k == hashlib.sha3_256("key:密信".encode()).hexdigest()
+    # 重复购买被拒绝
+    assert not node.validate_tx(_signed_tx(buyer, "nova:text:buy", amount=5,
+                                           text_id=tid, buyer_pub=buyer_pub))
+    # 购买后作者文本信誉 +2
+    assert node.store.text_reputation[author.address] == pytest.approx(2.0)
+
+
+def test_text_deposit_tier_reputation_discount():
+    node = _node()
+    author = QuantumWallet()
+    _fund(node, author.address)
+    # 初始基础档 10 NOVA
+    assert node.socialfi.text_deposit_required("basic", author.address) == 10.0
+    # 信誉提升后保证金自动下调：80 分 -> 5 NOVA（档位自动下调）
+    node.store.text_reputation[author.address] = 80.0
+    assert node.socialfi.text_deposit_required("basic", author.address) == 5.0
+    assert node.socialfi.text_deposit_required("advanced", author.address) == 50.0
+    assert node.socialfi.text_deposit_required("pro", author.address) == 500.0
+    # 保证金不足被拒绝
+    node.store.text_reputation[author.address] = 0.0
+    bad = _signed_tx(author, "nova:text:create", amount=5,
+                     title="保证金不足", visibility="public", price=0, content="x")
+    assert not node.validate_tx(bad)
+
+
+def test_text_complain_arbitration_buyer_wins():
+    node = _node()
+    author = QuantumWallet()
+    buyer = QuantumWallet()
+    v1, v2, v3 = QuantumWallet(), QuantumWallet(), QuantumWallet()
+    _fund(node, author.address)
+    _fund(node, buyer.address)
+    _fund_eco(node)
+    for v in (v1, v2, v3):
+        _fund(node, v.address)
+        node.store.miner_registry[v.address] = 100.0   # 超级节点矿工=验证者
+
+    _apply(node, _signed_tx(author, "nova:text:create", amount=10,
+                            title="标题党密文", visibility="sealed", price=2,
+                            **_sealed_payload(node, "标题党密文")))
+    tid = next(iter(node.store.text_assets))
+    a = node.store.text_assets[tid]
+    buyer_priv, buyer_pub = text_gen_p256_keypair(b"buyer-" + buyer.address.encode())
+    _apply(node, _signed_tx(buyer, "nova:text:buy", amount=2, text_id=tid, buyer_pub=buyer_pub))
+
+    _apply(node, _signed_tx(buyer, "nova:text:complain", text_id=tid))
+    assert a["dispute"] and a["deposit_frozen"] is True
+    # 普通用户不能投票
+    assert not node.validate_tx(_signed_tx(buyer, "nova:text:vote", text_id=tid, support="buyer"))
+    # 3 位验证者 2:1 支持买家 -> 达到 2/3 自动执行赔付
+    _apply(node, _signed_tx(v1, "nova:text:vote", text_id=tid, support="buyer"))
+    _apply(node, _signed_tx(v2, "nova:text:vote", text_id=tid, support="buyer"))
+    _apply(node, _signed_tx(v3, "nova:text:vote", text_id=tid, support="seller"))
+    assert a["dispute"]["settled"] is True
+    assert a["dispute"]["outcome"] == "buyer"
+    # 保证金 10 NOVA：一半赔付买家，一半罚没进生态基金
+    assert node.balances[buyer.address] == pytest.approx(100000.0 - 2.0 + 5.0)
+    assert node.balances["0x_text_escrow"] == pytest.approx(0.0)
+    assert node.balances[node.economy.ECOSYSTEM_FUND] == pytest.approx(1000000.0 + 0.2 + 5.0)
+    # 作者信誉大幅下降（被扣为 0）
+    assert node.store.text_reputation[author.address] == pytest.approx(0.0)
+
+
+def test_text_arbitration_seller_wins_and_tie_escalation():
+    node = _node()
+    author = QuantumWallet()
+    buyer = QuantumWallet()
+    v1, v2, v3 = QuantumWallet(), QuantumWallet(), QuantumWallet()
+    _fund(node, author.address)
+    _fund(node, buyer.address)
+    for v in (v1, v2, v3):
+        _fund(node, v.address)
+        node.store.miner_registry[v.address] = 100.0
+
+    _apply(node, _signed_tx(author, "nova:text:create", amount=10,
+                            title="货真价实的密文", visibility="sealed", price=2,
+                            **_sealed_payload(node, "货真价实的密文")))
+    tid = next(iter(node.store.text_assets))
+    a = node.store.text_assets[tid]
+    buyer_priv, buyer_pub = text_gen_p256_keypair(b"buyer-" + buyer.address.encode())
+    _apply(node, _signed_tx(buyer, "nova:text:buy", amount=2, text_id=tid, buyer_pub=buyer_pub))
+    _apply(node, _signed_tx(buyer, "nova:text:complain", text_id=tid))
+
+    # 平局：1 支持买家 / 1 支持卖家 / 1 弃权 -> 进入二次仲裁（扩大仲裁庭）
+    _apply(node, _signed_tx(v1, "nova:text:vote", text_id=tid, support="buyer"))
+    _apply(node, _signed_tx(v2, "nova:text:vote", text_id=tid, support="seller"))
+    _apply(node, _signed_tx(v3, "nova:text:vote", text_id=tid, support="abstain"))
+    assert a["dispute"]["escalated"] is True
+    assert a["dispute"]["settled"] is False
+    # 扩大仲裁庭补足 7 票后多数决（4 买家 / 1 卖家 / 2 弃权）
+    for i in range(4):
+        v = QuantumWallet()
+        _fund(node, v.address)
+        node.store.miner_registry[v.address] = 100.0
+        _apply(node, _signed_tx(v, "nova:text:vote", text_id=tid,
+                                support="buyer" if i < 3 else "abstain"))
+    assert a["dispute"]["settled"] is True
+    assert a["dispute"]["outcome"] == "buyer"
+
+    # 卖家胜出路径：3:0 支持卖家 -> 保证金全额退回作者
+    node2 = _node()
+    a2w = QuantumWallet()
+    b2 = QuantumWallet()
+    s1, s2, s3 = QuantumWallet(), QuantumWallet(), QuantumWallet()
+    _fund(node2, a2w.address)
+    _fund(node2, b2.address)
+    for v in (s1, s2, s3):
+        _fund(node2, v.address)
+        node2.store.miner_registry[v.address] = 100.0
+    _apply(node2, _signed_tx(a2w, "nova:text:create", amount=10,
+                             title="好内容", visibility="sealed", price=2,
+                             **_sealed_payload(node2, "好内容")))
+    tid2 = next(iter(node2.store.text_assets))
+    a2 = node2.store.text_assets[tid2]
+    bp = text_gen_p256_keypair(b"buyer2-" + b2.address.encode())[1]
+    _apply(node2, _signed_tx(b2, "nova:text:buy", amount=2, text_id=tid2, buyer_pub=bp))
+    _apply(node2, _signed_tx(b2, "nova:text:complain", text_id=tid2))
+    _apply(node2, _signed_tx(s1, "nova:text:vote", text_id=tid2, support="seller"))
+    _apply(node2, _signed_tx(s2, "nova:text:vote", text_id=tid2, support="seller"))
+    _apply(node2, _signed_tx(s3, "nova:text:vote", text_id=tid2, support="seller"))
+    assert a2["dispute"]["outcome"] == "seller"
+    assert node2.balances["0x_text_escrow"] == pytest.approx(0.0)
+    assert node2.balances[a2w.address] == pytest.approx(100000.0 + 1.8)   # 扣 10 又退回 10，净 +1.8
+
+
+def test_text_destroy_immediate_release_and_maintain_timeout():
+    node = _node()
+    author = QuantumWallet()
+    _fund(node, author.address)
+    _apply(node, _signed_tx(author, "nova:text:create", amount=10,
+                            title="待销毁文本", visibility="public", price=0, content="abc"))
+    tid = next(iter(node.store.text_assets))
+    a = node.store.text_assets[tid]
+    # 销毁密文 NFT -> 立即释放保证金
+    _apply(node, _signed_tx(author, "nova:text:destroy", text_id=tid))
+    assert a["status"] == "destroyed" and a["deposit_released"] is True
+    assert node.balances["0x_text_escrow"] == pytest.approx(0.0)
+
+    # 仲裁超时（无人投票 14 天）-> 每日维护自动按卖家处理
+    node3 = _node()
+    aw = QuantumWallet()
+    bw = QuantumWallet()
+    _fund(node3, aw.address)
+    _fund(node3, bw.address)
+    _apply(node3, _signed_tx(aw, "nova:text:create", amount=10,
+                             title="无人仲裁", visibility="sealed", price=1,
+                             **_sealed_payload(node3, "无人仲裁")))
+    tid3 = next(iter(node3.store.text_assets))
+    a3 = node3.store.text_assets[tid3]
+    bp = text_gen_p256_keypair(b"buyer3-" + bw.address.encode())[1]
+    _apply(node3, _signed_tx(bw, "nova:text:buy", amount=1, text_id=tid3, buyer_pub=bp))
+    _apply(node3, _signed_tx(bw, "nova:text:complain", text_id=tid3))
+    a3["dispute"]["started_at"] = time.time() - 15 * 86400
+    assert node3.socialfi.maintain() == 1
+    assert a3["dispute"]["outcome"] == "seller"
+    assert node3.balances[aw.address] == pytest.approx(100000.0 + 0.9)   # 扣 10 又退回 10，净 +0.9
+
+
+@pytest.mark.asyncio
+async def test_text_rpc_key_and_domain():
+    node = _node()
+    wallet = QuantumWallet()
+    _fund(node, wallet.address)
+
+    app = web.Application(client_max_size=262144)
+    setup_routes(app, node)
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        resp = await client.get("/api/text/key")
+        body = await resp.json()
+        assert resp.status == 200 and body["public_key"].startswith("04")
+
+        # 通过通用 op 接口创建密文文本
+        data = json.dumps(dict(op="nova:text:create", title="RPC 密文",
+                               visibility="sealed", price=1, amount=10,
+                               **_sealed_payload(node, "RPC 密文")), ensure_ascii=False)
+        ts = int(time.time())
+        tx = Tx(wallet.address, wallet.address, 10, [], data,
+                wallet.public_key_hex(), "", timestamp=ts)
+        tx.signature = wallet.sign(tx.signing_data())
+        resp = await client.post("/api/socialfi", json={
+            "addr": wallet.address, "amount": 10, "data": data, "timestamp": ts,
+            "sender_public_key": wallet.public_key_hex(), "signature": tx.signature,
+        })
+        body = await resp.json()
+        assert resp.status == 200 and body.get("id", "").startswith("txt_")
+
+        resp = await client.get("/api/socialfi/text")
+        dom = await resp.json()
+        assert len(dom["assets"]) == 1
+        assert dom["contract_pubkey"] == node.socialfi.text_contract_pubkey()
+        resp = await client.get("/api/socialfi/overview")
+        ov = await resp.json()
+        assert ov["text_assets"] == 1 and ov["text_escrow"] == pytest.approx(10.0)
     finally:
         await client.close()

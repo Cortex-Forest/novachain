@@ -141,13 +141,15 @@ python -c "from core.crypto import QuantumWallet; w = QuantumWallet(); print('�
 | 社交身份 | 链上声誉系统 | 实时计算 0-100 信誉分，高信誉（≥80）享 50% 交易费折扣 |
 | 金融投资 | 创作者债券 | `nova:bond:issue` / `nova:bond:buy` / `nova:bond:fund` / `nova:bond:redeem` |
 | 金融投资 | 碎片化 NFT 市场 | `nova:frac:split` / `nova:frac:buy` |
+| 内容创作 | 文本创作合约（公开/加密） | `nova:text:create` / `nova:text:buy` / `nova:text:unlist` / `nova:text:destroy` / `nova:text:release_deposit` / `nova:text:complain` / `nova:text:vote` |
 
 - 内容类玩法携带 CID 时，链自动固定到存储网络，占用链的存储能力。
 - 推荐引擎在链上确定性计算，并输出任务规格，可一键发布为算力市场的计算任务，占用链的算力能力。
-- RPC：`/api/op`、`/api/socialfi/{domain}`、`/api/socialfi/overview`、`/api/reputation/{addr}`、`/api/graph/recommend/{addr}`。
+- RPC：`/api/op`、`/api/socialfi/{domain}`、`/api/socialfi/overview`、`/api/reputation/{addr}`、`/api/graph/recommend/{addr}`、`/api/text/key`（文本合约公钥）。
+- 文本创作合约：公开文本直接上链（内容全文）；密文文本只存密文 IPFS 哈希 + 标题 + 标识符 + 售价，正文密钥用文本合约公钥（P-256）锁定，购买后合约自动分账（90% 作者 / 10% 生态基金）并把密钥二次加密交付买家；阶梯式保证金（基础 10 / 进阶 100 / 专业 1000 NOVA，信誉 ≥80 自动下调 50%）托管在 `0x_text_escrow` 保证金池，下架 7 天无投诉自动退回，销毁密文 NFT 立即释放；投诉由社区验证者（矿工 / 质押 ≥100 / 信誉 ≥70）投票，≥2/3 支持买家自动赔付+罚没，平局进入二次仲裁（扩大至 7 人），超时自动按卖家处理。
 
 ### 测试
-`python test_storage_compute.py` 覆盖存储/算力操作的链上确定性、结算与 RPC；`python test_socialfi.py` 覆盖 10 类 SocialFi 玩法的验证、结算与声誉计算。
+`python test_storage_compute.py` 覆盖存储/算力操作的链上确定性、结算与 RPC；`python test_socialfi.py` 覆盖 11 类 SocialFi 玩法（含文本创作合约的加密发布/购买解锁/保证金/仲裁）的验证、结算与声誉计算。
 
 
 ## 合约虚拟机（NexLang DSL，v0.6）

@@ -197,3 +197,118 @@ def verify_quantum_tx(tx_data: str, sig_hex: str, pub_hex: str, claimed_address:
         return expected == claimed_address
     except Exception:
         return False
+
+
+# ---------------------------------------------------------------------------
+# 文本合约密钥封装（ECIES：P-256 ECDH + HKDF-SHA256 + AES-256-GCM）
+# 用于密文文本资产：
+#   1) 作者用"文本合约公钥"锁定正文密钥 K（AES-256）；
+#   2) 购买后，合约用私钥把 K 二次加密给买家公钥，买家用自己的私钥解开。
+# 所有随机因子均由 seed（交易/资产 ID）确定性派生，保证跨节点状态一致。
+# ---------------------------------------------------------------------------
+TEXT_ECIES_TAG = "nova-text-key-v1"
+_P256_ORDER = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
+
+
+def _crypto_available() -> bool:
+    try:
+        from cryptography.hazmat.primitives.asymmetric import ec  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+TEXT_CRYPTO_OK = _crypto_available()
+
+
+def _p256_derive_private(scalar: int):
+    """按给定标量派生 P-256 私钥。调用方须传入已归约（1 <= v <= n-1）的标量，
+    cryptography 对越界值做模 n 归约，但为确定性起见我们统一在调用前归约。"""
+    from cryptography.hazmat.primitives.asymmetric import ec
+    return ec.derive_private_key(scalar, ec.SECP256R1())
+
+
+def _p256_pub_hex(priv) -> str:
+    from cryptography.hazmat.primitives import serialization
+    raw = priv.public_key().public_bytes(serialization.Encoding.X962,
+                                         serialization.PublicFormat.UncompressedPoint)
+    return raw.hex()
+
+
+def text_p256_pub_from_priv(priv_hex: str) -> str:
+    """由私钥 hex 导出 P-256 公钥 hex（04||x||y，65 字节）。"""
+    scalar = int.from_bytes(bytes.fromhex(priv_hex), "big")
+    return _p256_pub_hex(_p256_derive_private(scalar))
+
+
+def text_gen_p256_keypair(seed: bytes = None):
+    """生成 P-256 密钥对。seed 提供时确定性派生，否则使用系统随机数。"""
+    if seed is None:
+        import os
+        seed = os.urandom(32)
+    d = int.from_bytes(hashlib.sha3_256(b"nova:p256:" + seed).digest(), "big")
+    priv = _p256_derive_private(d)
+    d = priv.private_numbers().private_value
+    return d.to_bytes(32, "big").hex(), _p256_pub_hex(priv)
+
+
+def _hkdf(ikm: bytes, length: int = 32) -> bytes:
+    """HKDF-SHA256，固定 32 字节零盐（RFC 5869 无盐语义）。
+    与浏览器 WebCrypto HKDF 的零盐行为一致，便于密文密钥跨端互操作。"""
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+    return HKDF(algorithm=hashes.SHA256(), length=length,
+                salt=b"\x00" * 32, info=b"nova:text:key").derive(ikm)
+
+
+def text_ecies_encrypt(recipient_pub_hex: str, plaintext_hex: str, seed: bytes) -> dict:
+    """用接收方 P-256 公钥封装明文（hex 输入/输出）。ephemeral 私钥由 seed 确定性派生。"""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    peer = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(),
+                                                        bytes.fromhex(recipient_pub_hex))
+    d = int.from_bytes(hashlib.sha3_256(b"nova:text:eph:" + seed).digest(), "big")
+    eph = _p256_derive_private(d)
+    shared = eph.exchange(ec.ECDH(), peer)
+    iv = hashlib.sha3_256(b"nova:text:iv:" + seed).digest()[:12]
+    key = _hkdf(shared)
+    ct = AESGCM(key).encrypt(iv, bytes.fromhex(plaintext_hex), None)
+    epk = eph.public_key().public_bytes(serialization.Encoding.X962,
+                                        serialization.PublicFormat.UncompressedPoint).hex()
+    return {"v": 1, "tag": TEXT_ECIES_TAG, "curve": "P-256",
+            "epk": epk, "iv": iv.hex(), "ct": ct.hex()}
+
+
+def text_ecies_decrypt(priv_hex: str, env: dict) -> str:
+    """用私钥解开 ECIES 信封，返回明文 hex。"""
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    scalar = int.from_bytes(bytes.fromhex(priv_hex), "big")
+    priv = _p256_derive_private(scalar)
+    peer = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(),
+                                                        bytes.fromhex(env["epk"]))
+    shared = priv.exchange(ec.ECDH(), peer)
+    iv = bytes.fromhex(env["iv"])
+    key = _hkdf(shared)
+    return AESGCM(key).decrypt(iv, bytes.fromhex(env["ct"]), None).hex()
+
+
+def text_ecies_wrap_to(priv_hex: str, recipient_pub_hex: str, plaintext_hex: str,
+                       seed: bytes) -> dict:
+    """合约私钥持有者把明文（正文密钥 K）二次封装给买家公钥，用于购买解锁。"""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    scalar = int.from_bytes(bytes.fromhex(priv_hex), "big")
+    priv = _p256_derive_private(scalar)
+    peer = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(),
+                                                        bytes.fromhex(recipient_pub_hex))
+    shared = priv.exchange(ec.ECDH(), peer)
+    iv = hashlib.sha3_256(b"nova:text:iv:" + seed).digest()[:12]
+    key = _hkdf(shared)
+    ct = AESGCM(key).encrypt(iv, bytes.fromhex(plaintext_hex), None)
+    epk = priv.public_key().public_bytes(serialization.Encoding.X962,
+                                         serialization.PublicFormat.UncompressedPoint).hex()
+    return {"v": 1, "tag": TEXT_ECIES_TAG, "curve": "P-256",
+            "epk": epk, "iv": iv.hex(), "ct": ct.hex()}

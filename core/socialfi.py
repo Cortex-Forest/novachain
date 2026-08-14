@@ -13,8 +13,12 @@ data 为 JSON {op, ...}），经区块/DAG 广播后在所有节点确定性重�
 """
 import hashlib
 import json
+import math
 import re
 import time
+
+from core.crypto import (TEXT_CRYPTO_OK, text_ecies_decrypt, text_ecies_wrap_to,
+                          text_gen_p256_keypair, text_p256_pub_from_priv)
 
 CID_RE = re.compile(r"^(?:0x[0-9a-fA-F]{64}|bafy[a-z2-7]{46,58})$")
 HEX64_RE = re.compile(r"^[0-9a-fA-F]{64}$")
@@ -40,6 +44,21 @@ BOND_MAX_TERM_DAYS = 3650
 FRAC_MIN_SUPPLY = 2
 FRAC_MAX_SUPPLY = 100_000
 FRAC_MIN_PRICE = 0.001
+# 文本创作合约（公开/加密发布）参数
+TEXT_TITLE_MAX = 64
+TEXT_IDENT_MAX = 32
+TEXT_BODY_MAX = 20000
+TEXT_CIPHER_MAX = 8000
+TEXT_MIN_PRICE = 0.01
+TEXT_DEPOSIT_BASIC = 10.0          # 基础档保证金（新创作者单篇）
+TEXT_DEPOSIT_ADVANCED = 100.0      # 进阶档保证金（已验证创作者系列）
+TEXT_DEPOSIT_PRO = 1000.0          # 专业档保证金（机构/头部创作者）
+TEXT_AUTHOR_SHARE = 0.9            # 版税自动分账：90% 归作者
+TEXT_RELEASE_DAYS = 7              # 下架后无投诉，7 天自动退回保证金
+TEXT_DISPUTE_QUORUM = 3            # 首次仲裁庭人数
+TEXT_DISPUTE_MAX = 7               # 二次仲裁最大人数
+TEXT_DISPUTE_TIMEOUT_DAYS = 14     # 仲裁超时自动按卖家处理
+TEXT_ESCROW = "0x_text_escrow"     # 文本交易合约保证金池
 REPUTATION_TIERS = ((90, "星核", "S"), (70, "星环", "A"), (40, "星芒", "B"), (0, "星尘", "C"))
 PIN_SIZE_GB = 0.001                 # 内容自动固定时的默认最小体积（0.001 GB）
 PIN_DURATION_DAYS = 30
@@ -706,6 +725,7 @@ class SocialFi:
         posts = sum(1 for p in st.graph_posts.values() if p["addr"] == addr)
         likes_got = sum(len(p["likes"]) for p in st.graph_posts.values() if p["addr"] == addr)
         comp["内容"] = round(min(posts * 2 + likes_got * 0.5, 10), 2)
+        comp["文本创作"] = round(min(self._text_rep(addr) / 5.0, 15), 2)
         score = round(sum(comp.values()), 2)
         if addr in st.jailed:
             score = max(0.0, round(score - 10, 2))
@@ -878,6 +898,315 @@ class SocialFi:
             self.store.balances[addr] = self.store.balances.get(addr, 0) - cost
             self.store.balances[f["owner"]] = self.store.balances.get(f["owner"], 0) + cost
             self._record(tx, op, fid, f"购买 {qty} 份碎片")    # ------------------------------------------------------------------
+    # 11. 文本创作合约：公开文本 / 加密文本（密文市场）
+    # ------------------------------------------------------------------
+    def text_contract_pubkey(self) -> str:
+        """Nova 文本合约公钥：作者用它锁定正文密钥（AES-256），
+        购买后合约用私钥把密钥二次加密给买家。由创世状态确定性派生并持久化。"""
+        if not self.store.text_contract_priv:
+            seed = hashlib.sha3_256(json.dumps(sorted(self.store.balances),
+                                               ensure_ascii=False).encode()).digest()
+            priv, _pub = text_gen_p256_keypair(b"nova:text:contract:" + seed)
+            self.store.text_contract_priv = priv
+        return text_p256_pub_from_priv(self.store.text_contract_priv)
+
+    def _text_rep(self, addr) -> float:
+        return float(self.store.text_reputation.get(addr, 0.0))
+
+    def _text_bump_rep(self, addr, delta) -> None:
+        v = min(100.0, max(0.0, self._text_rep(addr) + delta))
+        self.store.text_reputation[addr] = v
+
+    def text_deposit_required(self, tier: str, addr: str = None) -> float:
+        """阶梯式保证金：基础 10 / 进阶 100 / 专业 1000 NOVA，
+        信誉分 >= 80 时自动下调至 50%（如基础档 10 -> 5 NOVA）。"""
+        base = {"basic": TEXT_DEPOSIT_BASIC, "advanced": TEXT_DEPOSIT_ADVANCED,
+                "pro": TEXT_DEPOSIT_PRO}.get(tier, TEXT_DEPOSIT_BASIC)
+        rep = self._text_rep(addr) if addr else 0.0
+        discount = 0.5 * min(1.0, rep / 80.0)
+        return _amt(base * (1.0 - discount))
+
+    def _is_text_validator(self, addr) -> bool:
+        """社区验证者：超级节点矿工 / 质押 >= 100 NOVA 的验证者 / 高信誉（>=70）用户。"""
+        if addr in self.store.miner_registry:
+            return True
+        if float(self.store.stakes.get(addr, 0)) >= 100.0:
+            return True
+        return self.reputation(addr)["score"] >= 70.0
+
+    def _valid_text_identifier(self, ident) -> bool:
+        if not (isinstance(ident, str) and 0 < len(ident) <= TEXT_IDENT_MAX):
+            return False
+        if any(ord(c) < 32 for c in ident):
+            return False
+        return all(a.get("identifier") != ident for a in self.store.text_assets.values())
+
+    def _text_validate(self, d, tx):
+        op = d.get("op")
+        addr = tx.sender
+        if op == "nova:text:create":
+            title = d.get("title", "")
+            visibility = d.get("visibility", "public")
+            tier = d.get("tier", "basic")
+            price = d.get("price", 0)
+            if not (isinstance(title, str) and 0 < len(title.strip()) <= TEXT_TITLE_MAX):
+                return False
+            if visibility not in ("public", "sealed"):
+                return False
+            if tier not in ("basic", "advanced", "pro"):
+                return False
+            if not (isinstance(price, (int, float)) and not isinstance(price, bool)
+                    and math.isfinite(price)):
+                return False
+            if visibility == "public":
+                if price < 0 or price > 1e6:
+                    return False
+                content = d.get("content", "")
+                if not (isinstance(content, str) and 0 < len(content.strip()) <= TEXT_BODY_MAX):
+                    return False
+            else:
+                if not TEXT_CRYPTO_OK:
+                    return False
+                if not (isinstance(price, (int, float)) and not isinstance(price, bool)
+                        and TEXT_MIN_PRICE <= price <= 1e6):
+                    return False
+                self.text_contract_pubkey()   # 确保合约密钥对已就绪（确定性派生）
+                kc = d.get("key_cipher")
+                if not isinstance(kc, dict) or kc.get("tag") != "nova-text-key-v1":
+                    return False
+                try:
+                    k_hex = text_ecies_decrypt(self.store.text_contract_priv, kc)
+                except Exception:
+                    return False
+                if not (isinstance(k_hex, str) and len(k_hex) == 64
+                        and re.fullmatch(r"[0-9a-fA-F]{64}", k_hex)):
+                    return False
+                cipher_cid = d.get("cipher_cid", "")
+                cipher_data = d.get("cipher_data", "")
+                if bool(cipher_cid) == bool(cipher_data):
+                    return False
+                if cipher_cid and not CID_RE.match(cipher_cid):
+                    return False
+                if cipher_data and not (isinstance(cipher_data, str)
+                                        and 0 < len(cipher_data) <= TEXT_CIPHER_MAX):
+                    return False
+            ident = d.get("identifier", "")
+            if ident and not self._valid_text_identifier(ident):
+                return False
+            if not self._valid_cid_extra(d):
+                return False
+            req = self.text_deposit_required(tier, addr)
+            return (isinstance(tx.amount, (int, float)) and not isinstance(tx.amount, bool)
+                    and _amt(tx.amount) == _amt(req))
+        if op == "nova:text:buy":
+            tid = d.get("text_id", "")
+            if tid not in self.store.text_assets:
+                return False
+            a = self.store.text_assets[tid]
+            if addr == a["author"] or a["status"] in ("unlisted", "destroyed"):
+                return False
+            if addr in a["buyers"]:
+                return False
+            if a["visibility"] == "sealed":
+                bp = d.get("buyer_pub", "")
+                if not (isinstance(bp, str) and re.fullmatch(r"04[0-9a-fA-F]{128}", bp)):
+                    return False
+            return (isinstance(tx.amount, (int, float)) and not isinstance(tx.amount, bool)
+                    and _amt(tx.amount) == _amt(a["price"]))
+        if op == "nova:text:unlist":
+            tid = d.get("text_id", "")
+            if tx.amount != 0 or tid not in self.store.text_assets:
+                return False
+            a = self.store.text_assets[tid]
+            return addr == a["author"] and a["status"] == "listed" and not a.get("disputed")
+        if op == "nova:text:destroy":
+            tid = d.get("text_id", "")
+            if tx.amount != 0 or tid not in self.store.text_assets:
+                return False
+            a = self.store.text_assets[tid]
+            return addr == a["author"] and a["status"] != "destroyed" and not a.get("disputed")
+        if op == "nova:text:release_deposit":
+            tid = d.get("text_id", "")
+            if tx.amount != 0 or tid not in self.store.text_assets:
+                return False
+            a = self.store.text_assets[tid]
+            if addr != a["author"] or a.get("deposit_released") or a.get("disputed"):
+                return False
+            if a["status"] not in ("unlisted", "destroyed"):
+                return False
+            return time.time() >= a.get("releasable_at", 0)
+        if op == "nova:text:complain":
+            tid = d.get("text_id", "")
+            if tx.amount != 0 or tid not in self.store.text_assets:
+                return False
+            a = self.store.text_assets[tid]
+            return (a["visibility"] == "sealed" and addr in a["buyers"]
+                    and addr != a["author"] and not a.get("disputed")
+                    and a["status"] != "destroyed")
+        if op == "nova:text:vote":
+            tid = d.get("text_id", "")
+            support = d.get("support", "")
+            if tx.amount != 0 or tid not in self.store.text_assets:
+                return False
+            a = self.store.text_assets[tid]
+            dis = a.get("dispute")
+            if not dis or dis.get("settled") or dis.get("outcome") is not None:
+                return False
+            if support not in ("buyer", "seller", "abstain"):
+                return False
+            if addr in dis["voters"] or len(dis["voters"]) >= TEXT_DISPUTE_MAX:
+                return False
+            return self._is_text_validator(addr)
+        return False
+
+    def _text_settle(self, a):
+        """仲裁结算：>= 2/3 支持买家 -> 赔付+罚没；>= 2/3 支持卖家 -> 释放；
+        平局 -> 二次仲裁（扩大仲裁庭）；超时无结论 -> 按卖家处理。"""
+        dis = a.get("dispute")
+        if not dis or dis.get("settled"):
+            return
+        voters = dis["voters"]
+        n = len(voters)
+        b = sum(1 for v in voters.values() if v == "buyer")
+        s = sum(1 for v in voters.values() if v == "seller")
+        if n < TEXT_DISPUTE_QUORUM:
+            if time.time() - dis["started_at"] > TEXT_DISPUTE_TIMEOUT_DAYS * 86400:
+                self._text_execute(a, "seller")
+            return
+        if not dis.get("escalated"):
+            if n >= TEXT_DISPUTE_QUORUM and max(b, s) * 3 >= 2 * n:
+                self._text_execute(a, "buyer" if b > s else "seller")
+                return
+            dis["escalated"] = True          # 平局 -> 二次仲裁
+            return
+        if n >= TEXT_DISPUTE_MAX:
+            self._text_execute(a, "buyer" if b > s else "seller")
+
+    def _text_execute(self, a, winner):
+        """执行仲裁结果：从保证金池划款 + 信誉分结算（确定性、自动执行）。"""
+        dis = a["dispute"]
+        deposit = float(a["deposit"])
+        escrow = self.store.balances.get(TEXT_ESCROW, 0)
+        if winner == "buyer":
+            comp = _amt(deposit * 0.5)
+            forfeit = _amt(deposit - comp)
+            self.store.balances[TEXT_ESCROW] = _amt(escrow - deposit)
+            self.store.balances[dis["complainant"]] = \
+                self.store.balances.get(dis["complainant"], 0) + comp
+            self.store.balances[self.economy.ECOSYSTEM_FUND] = \
+                self.store.balances.get(self.economy.ECOSYSTEM_FUND, 0) + forfeit
+            self._text_bump_rep(a["author"], -20.0)
+            self._text_bump_rep(dis["complainant"], 5.0)
+        else:
+            self.store.balances[TEXT_ESCROW] = _amt(escrow - deposit)
+            self.store.balances[a["author"]] = \
+                self.store.balances.get(a["author"], 0) + deposit
+        for v, side in dis["voters"].items():
+            if side == winner:
+                self._text_bump_rep(v, 3.0)
+        dis["settled"] = True
+        dis["outcome"] = winner
+        a["deposit_frozen"] = False
+        a["deposit_released"] = True
+
+    def _text_apply(self, tx, d):
+        addr = tx.sender
+        op = d.get("op")
+        if op == "nova:text:create":
+            title = d["title"].strip()
+            visibility = d.get("visibility", "public")
+            price = float(d.get("price", 0))
+            tier = d.get("tier", "basic")
+            deposit = float(tx.amount)
+            ident = (d.get("identifier") or "").strip()
+            if not ident:
+                ident = "t-" + _h(f"{addr}{title}{tx.txid}")[:16]
+            tid = "txt_" + _h(f"{addr}{title}{tx.txid}")[:20]
+            self.store.balances[addr] = self.store.balances.get(addr, 0) - deposit
+            self.store.balances[TEXT_ESCROW] = self.store.balances.get(TEXT_ESCROW, 0) + deposit
+            asset = {
+                "id": tid, "identifier": ident, "author": addr, "title": title,
+                "visibility": visibility, "price": price, "tier": tier,
+                "series": bool(d.get("series", False)),
+                "exposure_weight": 1.5 if tier == "pro" else 1.0,
+                "deposit": deposit, "deposit_frozen": False, "deposit_released": False,
+                "status": "listed", "buyers": [], "keys": {},
+                "content": "", "cipher_cid": "", "cipher_data": "", "key_cipher": {},
+                "dispute": None, "releasable_at": 0, "created_at": time.time(),
+                "cid": d.get("cid", ""),
+            }
+            if visibility == "public":
+                asset["content"] = d["content"]
+            else:
+                asset["cipher_cid"] = d.get("cipher_cid", "")
+                asset["cipher_data"] = d.get("cipher_data", "")
+                asset["key_cipher"] = d.get("key_cipher") or {}
+            self.store.text_assets[tid] = asset
+            self._pin_content(addr, d.get("cid", ""), d.get("size_gb", PIN_SIZE_GB),
+                              d.get("duration_days", PIN_DURATION_DAYS))
+            self._record(tx, op, tid,
+                         f"{'加密发布' if visibility == 'sealed' else '发布'}「{title}」")
+        elif op == "nova:text:buy":
+            tid = d["text_id"]
+            a = self.store.text_assets[tid]
+            price = float(a["price"])
+            self.store.balances[addr] = self.store.balances.get(addr, 0) - price
+            author_share = _amt(price * TEXT_AUTHOR_SHARE)
+            eco_share = _amt(price - author_share)
+            self.store.balances[a["author"]] = self.store.balances.get(a["author"], 0) + author_share
+            self.store.balances[self.economy.ECOSYSTEM_FUND] = \
+                self.store.balances.get(self.economy.ECOSYSTEM_FUND, 0) + eco_share
+            a["buyers"].append(addr)
+            if a["visibility"] == "sealed":
+                k_hex = text_ecies_decrypt(self.store.text_contract_priv, a["key_cipher"])
+                seed = (tid + ":" + addr).encode()
+                a["keys"][addr] = text_ecies_wrap_to(self.store.text_contract_priv,
+                                                     d["buyer_pub"], k_hex, seed)
+            self._text_bump_rep(a["author"], 2.0)
+            self._text_bump_rep(addr, 1.0)
+            self._record(tx, op, tid, f"购买「{a['title']}」{price} NOVA")
+        elif op == "nova:text:unlist":
+            tid = d["text_id"]
+            a = self.store.text_assets[tid]
+            a["status"] = "unlisted"
+            a["releasable_at"] = time.time() + TEXT_RELEASE_DAYS * 86400
+            self._record(tx, op, tid, f"下架「{a['title']}」")
+        elif op == "nova:text:destroy":
+            tid = d["text_id"]
+            a = self.store.text_assets[tid]
+            a["status"] = "destroyed"
+            a["releasable_at"] = time.time()
+            if not a.get("deposit_released"):
+                self.store.balances[TEXT_ESCROW] = \
+                    _amt(self.store.balances.get(TEXT_ESCROW, 0) - float(a["deposit"]))
+                self.store.balances[a["author"]] = \
+                    self.store.balances.get(a["author"], 0) + float(a["deposit"])
+                a["deposit_released"] = True
+            self._record(tx, op, tid, f"销毁密文 NFT「{a['title']}」")
+        elif op == "nova:text:release_deposit":
+            tid = d["text_id"]
+            a = self.store.text_assets[tid]
+            self.store.balances[TEXT_ESCROW] = \
+                _amt(self.store.balances.get(TEXT_ESCROW, 0) - float(a["deposit"]))
+            self.store.balances[a["author"]] = \
+                self.store.balances.get(a["author"], 0) + float(a["deposit"])
+            a["deposit_released"] = True
+            self._record(tx, op, tid, f"退回保证金 {a['deposit']} NOVA")
+        elif op == "nova:text:complain":
+            tid = d["text_id"]
+            a = self.store.text_assets[tid]
+            a["dispute"] = {"complainant": addr, "voters": {}, "started_at": time.time(),
+                            "escalated": False, "settled": False, "outcome": None}
+            a["deposit_frozen"] = True
+            self._record(tx, op, tid, f"投诉「{a['title']}」货不对板")
+        elif op == "nova:text:vote":
+            tid = d["text_id"]
+            a = self.store.text_assets[tid]
+            a["dispute"]["voters"][addr] = d["support"]
+            self._text_settle(a)
+            self._record(tx, op, tid, f"仲裁投票（{'支持买家' if d['support'] == 'buyer' else '支持卖家' if d['support'] == 'seller' else '弃权'}）")
+
+    # ------------------------------------------------------------------
     # 统一入口：校验 / 应用 / 维护
     # ------------------------------------------------------------------
     OPS = {
@@ -892,6 +1221,10 @@ class SocialFi:
         "nova:bond:issue": "_bond", "nova:bond:buy": "_bond", "nova:bond:fund": "_bond",
         "nova:bond:redeem": "_bond",
         "nova:frac:split": "_frac", "nova:frac:buy": "_frac",
+        "nova:text:create": "_text", "nova:text:buy": "_text",
+        "nova:text:unlist": "_text", "nova:text:destroy": "_text",
+        "nova:text:release_deposit": "_text",
+        "nova:text:complain": "_text", "nova:text:vote": "_text",
     }
 
     def validate_op(self, tx) -> bool:
@@ -923,5 +1256,12 @@ class SocialFi:
         return d if isinstance(d, dict) else None
 
     def maintain(self):
-        """每日维护：暂无自动结算项（预测市场由预言机/创建者主动结算）。"""
-        return 0
+        """每日维护：文本仲裁超时自动结算（无结论按卖家处理）。"""
+        settled = 0
+        for a in self.store.text_assets.values():
+            if a.get("dispute") and not a["dispute"].get("settled"):
+                before = a["dispute"].get("settled", False)
+                self._text_settle(a)
+                if a["dispute"].get("settled") and not before:
+                    settled += 1
+        return settled
