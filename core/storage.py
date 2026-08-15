@@ -58,6 +58,9 @@ class StateStore:
         self.bonds: Dict[str, dict] = {}
         self.fractions: Dict[str, dict] = {}
         # 文本创作合约：公开/密文文本资产、作者信誉分、合约密钥对
+        # AI 创作者身份与日预算（阶段 0 PoC）
+        self.ai_creators: Dict[str, dict] = {}
+        self.ai_daily_spend: Dict[str, dict] = {}
         self.text_assets: Dict[str, dict] = {}
         self.text_reputation: Dict[str, float] = {}
         self.text_contract_priv: str = ""
@@ -118,6 +121,8 @@ class StateStore:
             "text_reputation": self.text_reputation,
             "text_contract_priv": self.text_contract_priv,
             "socialfi_events": self.socialfi_events,
+            "ai_creators": self.ai_creators,
+            "ai_daily_spend": self.ai_daily_spend,
         }
 
     def from_dict(self, d):
@@ -173,6 +178,8 @@ class StateStore:
         self.text_reputation = {k: float(v) for k, v in d.get("text_reputation", {}).items()}
         self.text_contract_priv = str(d.get("text_contract_priv", ""))
         self.socialfi_events = dict(d.get("socialfi_events", {}))
+        self.ai_creators = dict(d.get("ai_creators", {}))
+        self.ai_daily_spend = dict(d.get("ai_daily_spend", {}))
 
 
     def save(self, path):

@@ -64,6 +64,9 @@ class NovaNode:
         if not isinstance(tx.amount, (int, float)) or isinstance(tx.amount, bool): return False
         if not math.isfinite(tx.amount): return False
         if tx.amount < 0 or tx.amount > self.economy.TOTAL_SUPPLY: return False
+        ai = self.socialfi.ai_identity(tx.sender)
+        if ai is not None and not self.socialfi.ai_can_spend(tx.sender, tx.amount):
+            return False  # AI 创作者日预算硬约束（链上强制）
         if self._is_stake_op(tx):
             if tx.data == "nova:stake":
                 if tx.amount < self.economy.MIN_STAKE or tx.amount > self.economy.MAX_STAKE:
@@ -325,6 +328,8 @@ class NovaNode:
                     self.balances[addr] = self.balances.get(addr, 0) + amt
 
     def apply_tx(self, tx: Tx):
+        if tx.sender != "0x0000":
+            self.socialfi.ai_record_spend(tx.sender, tx.amount)
         if self._is_stake_op(tx):
             self._apply_stake_op(tx)
             return
@@ -1172,6 +1177,28 @@ class NovaNode:
         if guard: return guard
         addr = req.match_info['addr']
         return web.json_response(self.socialfi.reputation(addr))
+
+    async def rpc_ai_list(self, req):
+        out = []
+        for addr, identity in self.store.ai_creators.items():
+            v = dict(identity)
+            v["budget"] = self.socialfi.ai_budget_state(addr)
+            out.append(v)
+        return web.json_response({"count": len(out), "creators": out})
+
+    async def rpc_ai_view(self, req):
+        addr = req.match_info.get("addr", "")
+        identity = self.socialfi.ai_identity(addr)
+        if not identity:
+            return web.json_response({"error": "not_found"}, status=404)
+        view = dict(identity)
+        view["budget"] = self.socialfi.ai_budget_state(addr)
+        events = sorted((e for e in self.store.socialfi_events.values()
+                         if e.get("op", "").startswith("nova:ai:") and
+                         (e.get("addr") == addr or e.get("id") == addr)),
+                        key=lambda e: e.get("ts", 0), reverse=True)[:20]
+        view["recent_ops"] = events
+        return web.json_response(view)
 
     async def rpc_graph_recommend(self, req):
         guard = await self._rpc_guard(req)

@@ -158,6 +158,18 @@ python -c "from core.crypto import QuantumWallet; w = QuantumWallet(); print('�
 - 调用：`/api/call`（需 sender 签名），合约状态写入 `contract_state`，链上按日发放调用分红（防刷：同 sender/contract 每日一次）。
 - 编译器：`nexlang_compiler.py`（函数体内 `let` 与顶层一致，含槽位分配）；测试见 `test_vm_nexlang.py`。
 
+## AI 创作者：链上数字生命体（阶段 0 PoC，v0.7）
+
+自主 AI 创作者拥有自己的地址、钱包与链上规则，可自主创作内容、发布售卖、自动分账。规划与路线图见 `docs/AI_CREATOR_PLAN.md`。
+
+- 身份注册：`nova:ai:register`（name / owner / daily_budget / meta，一个地址唯一身份）。
+- 预算控制：`nova:ai:config`（仅 owner 可 `pause` / `resume` / 调整 `daily_budget`，data 携带 `target`）。
+- 链上强制：AI 地址发起任意交易时，`当日已支出 + 本次金额 <= 日预算` 才放行；暂停期间全部拒绝；
+  支出按自然日窗口在 `apply_tx` 确定性累计，跨天自动重置。
+- 收益闭环：沿用文本创作合约 90/10 自动分账，AI 钱包自动收款。
+- 演示：`python scripts/ai_creator_demo.py`（身份注册 → 自动发布 → 粉丝购买分账 → 预算拒绝 → 跨天重置 → 暂停/恢复）。
+- 测试：`python -m pytest test_ai_creator.py -q`（7 项，覆盖注册校验 / 预算约束 / 90:10 分账 / 窗口重置 / 暂停恢复 / 快照 / RPC）。
+- RPC：`GET /api/ai`（列表）、`GET /api/ai/{addr}`（身份 + 当日预算窗口 + 最近操作）。
 ## 演示模式与前端联动（storage.html / compute.html）
 - `apps-common.js` 演示模式新增 `demoStorageOp`（register/pin/claim/proof/order）与 `demoComputeOp`（publish/accept/submit，双节点一致结算），含守卫、奖励、余额变动、账本与事件，可与真实节点双模式切换。
 - `novachain-web` 新增页面：`storage.html`（我的节点 / 固定 / 认领与证明 / 存储订单 / 提供者）、`compute.html`（发布 / 任务市场 / 我的任务）；`apps.html`、`socialfi.html` 已加入口。

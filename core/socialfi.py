@@ -58,6 +58,10 @@ TEXT_RELEASE_DAYS = 7              # 下架后无投诉，7 天自动退回保�
 TEXT_DISPUTE_QUORUM = 3            # 首次仲裁庭人数
 TEXT_DISPUTE_MAX = 7               # 二次仲裁最大人数
 TEXT_DISPUTE_TIMEOUT_DAYS = 14     # 仲裁超时自动按卖家处理
+AI_NAME_MAX = 64                 # AI 创作者名称长度上限
+AI_META_MAX = 512                # AI 元数据（模型指纹等）长度上限
+AI_MIN_BUDGET = 0.1              # 日预算下限（NOVA/日）
+AI_MAX_BUDGET = 10000.0          # 日预算上限（NOVA/日）
 TEXT_ESCROW = "0x_text_escrow"     # 文本交易合约保证金池
 REPUTATION_TIERS = ((90, "星核", "S"), (70, "星环", "A"), (40, "星芒", "B"), (0, "星尘", "C"))
 PIN_SIZE_GB = 0.001                 # 内容自动固定时的默认最小体积（0.001 GB）
@@ -70,6 +74,10 @@ def _amt(v):
 
 def _h(raw: str) -> str:
     return hashlib.sha3_256(raw.encode()).hexdigest()
+
+def _ai_day(ts=None) -> str:
+    """AI 预算窗口按自然日划分（与链上签到等一致）。"""
+    return time.strftime("%Y-%m-%d", time.localtime(ts if ts is not None else time.time()))
 
 
 class SocialFi:
@@ -1207,6 +1215,120 @@ class SocialFi:
             self._record(tx, op, tid, f"仲裁投票（{'支持买家' if d['support'] == 'buyer' else '支持卖家' if d['support'] == 'seller' else '弃权'}）")
 
     # ------------------------------------------------------------------
+    # 11. AI 创作者身份与日预算约束（阶段 0 PoC）
+    # ------------------------------------------------------------------
+    def _ai_validate(self, d, tx):
+        op = d.get("op")
+        addr = tx.sender
+        if op == "nova:ai:register":
+            name = d.get("name", "")
+            owner = d.get("owner", "")
+            budget = d.get("daily_budget", 0)
+            if tx.amount != 0 or addr in self.store.ai_creators:
+                return False
+            if not (isinstance(name, str) and 0 < len(name.strip()) <= AI_NAME_MAX):
+                return False
+            if not (isinstance(owner, str) and ADDRESS_RE.match(owner)):
+                return False
+            if not (isinstance(budget, (int, float)) and not isinstance(budget, bool)
+                    and math.isfinite(budget) and AI_MIN_BUDGET <= budget <= AI_MAX_BUDGET):
+                return False
+            meta = d.get("meta", "")
+            return isinstance(meta, str) and len(meta) <= AI_META_MAX
+        if op == "nova:ai:config":
+            identity = self.store.ai_creators.get(d.get("target", ""))
+            if not identity or tx.amount != 0 or tx.sender != identity["owner"]:
+                return False
+            action = d.get("action", "")
+            if action in ("pause", "resume"):
+                return True
+            if action == "budget":
+                budget = d.get("daily_budget", 0)
+                return (isinstance(budget, (int, float)) and not isinstance(budget, bool)
+                        and math.isfinite(budget) and AI_MIN_BUDGET <= budget <= AI_MAX_BUDGET)
+            return False
+
+    def _ai_apply(self, tx, d):
+        addr = tx.sender
+        op = d.get("op")
+        if op == "nova:ai:register":
+            identity = {
+                "addr": addr,
+                "name": d["name"].strip(),
+                "owner": d["owner"],
+                "daily_budget": float(d["daily_budget"]),
+                "meta": d.get("meta", ""),
+                "status": "active",
+                "created_at": time.time(),
+                "updated_at": time.time(),
+            }
+            self.store.ai_creators[addr] = identity
+            self._record(tx, op, addr, f"AI 创作者注册「{identity['name']}」")
+        elif op == "nova:ai:config":
+            identity = self.store.ai_creators[d["target"]]
+            action = d.get("action")
+            if action == "pause":
+                identity["status"] = "paused"
+            elif action == "resume":
+                identity["status"] = "active"
+            elif action == "budget":
+                identity["daily_budget"] = float(d["daily_budget"])
+            identity["updated_at"] = time.time()
+            self._record(tx, op, d["target"], f"AI 配置更新：{action}")
+
+    # --- 供节点在交易流水线中调用的预算工具（链上强制，非链外建议） ---
+    def ai_identity(self, addr):
+        return self.store.ai_creators.get(addr)
+
+    def ai_budget_state(self, addr):
+        """当日预算窗口：{date, budget, spent, remaining, status}。"""
+        identity = self.store.ai_creators.get(addr)
+        if not identity:
+            return None
+        day = _ai_day()
+        entry = self.store.ai_daily_spend.get(addr)
+        spent = 0.0
+        if entry and entry.get("date") == day:
+            spent = float(entry.get("spent", 0.0))
+        return {
+            "date": day,
+            "budget": float(identity["daily_budget"]),
+            "spent": _amt(spent),
+            "remaining": _amt(max(0.0, float(identity["daily_budget"]) - spent)),
+            "status": identity.get("status", "active"),
+        }
+
+    def ai_can_spend(self, addr, amount) -> bool:
+        """AI 地址发起支出前由 validate_tx 调用；非 AI 地址恒为 True。"""
+        identity = self.store.ai_creators.get(addr)
+        if not identity:
+            return True
+        if identity.get("status") != "active":
+            return False
+        if not (isinstance(amount, (int, float)) and not isinstance(amount, bool)
+                and math.isfinite(amount) and amount >= 0):
+            return False
+        st = self.ai_budget_state(addr)
+        return st["spent"] + amount <= st["budget"] + 1e-9
+
+    def ai_record_spend(self, addr, amount):
+        """apply_tx 时确定性累计当日支出；跨天窗口自动重置。"""
+        if not self.store.ai_creators.get(addr):
+            return
+        day = _ai_day()
+        entry = self.store.ai_daily_spend.get(addr)
+        if not entry or entry.get("date") != day:
+            entry = {"date": day, "spent": 0.0}
+            self.store.ai_daily_spend[addr] = entry
+        try:
+            amt = float(amount)
+        except (TypeError, ValueError):
+            amt = 0.0
+        if not math.isfinite(amt) or amt < 0:
+            amt = 0.0
+        entry["spent"] = _amt(float(entry.get("spent", 0.0)) + amt)
+
+    # ------------------------------------------------------------------
     # 统一入口：校验 / 应用 / 维护
     # ------------------------------------------------------------------
     OPS = {
@@ -1225,6 +1347,7 @@ class SocialFi:
         "nova:text:unlist": "_text", "nova:text:destroy": "_text",
         "nova:text:release_deposit": "_text",
         "nova:text:complain": "_text", "nova:text:vote": "_text",
+        "nova:ai:register": "_ai", "nova:ai:config": "_ai",
     }
 
     def validate_op(self, tx) -> bool:

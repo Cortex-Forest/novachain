@@ -11,3 +11,5 @@ key.pem
 .coverage
 
 .cov.*
+
+.pytest_tmp/

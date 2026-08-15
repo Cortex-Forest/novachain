@@ -63,3 +63,5 @@ def setup_routes(app, node):
     app.router.add_get('/api/text/key', node.rpc_text_key)
     app.router.add_get('/api/reputation/{addr}', node.rpc_reputation)
     app.router.add_get('/api/graph/recommend/{addr}', node.rpc_graph_recommend)
+    app.router.add_get('/api/ai', node.rpc_ai_list)
+    app.router.add_get('/api/ai/{addr}', node.rpc_ai_view)
