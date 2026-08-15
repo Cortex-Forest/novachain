@@ -32,6 +32,14 @@ class Economy:
     ECOSYSTEM_FUND = "0x_ecosystem_fund"
     COMMUNITY_AIRDROP = "0x_community_airdrop"
 
+    # 算力网络经济模型（提示词 5）：激励池与存储共池，按贡献比例分配
+    AI_GROWTH_FUND = "0x_ai_growth_fund"      # AI 成长基金地址（合约控制）
+    COMPUTE_INCENTIVE_WEIGHT = 0.6            # 算力贡献权重 60%
+    STORAGE_INCENTIVE_WEIGHT = 0.4            # 存储贡献权重 40%
+    COMPUTE_MIN_STAKE = 100.0                 # 算力节点最低质押
+    COMPUTE_MAX_STAKE = 10000.0               # 算力节点最高质押
+    COMPUTE_UNBOND = 7 * 86400                # 解质押 7 天冷静期
+
     # 存储网络奖励参数（生态基金支付）
     STORAGE_REWARD_PER_GB_PER_DAY = 0.001   # 固定奖励：0.001 NOVA / GB / 天
     STORAGE_PROOF_REWARD = 0.05             # 每份存储证明奖励 0.05 NOVA

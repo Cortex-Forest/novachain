@@ -15,9 +15,16 @@ from core.chat import (ChatStore, chat_signature_data, validate_chat_payload,
 from core.storage_network import (StorageNetwork, CID_RE, HEX64_RE, MAX_REPLICAS,
                                   MAX_CAPACITY_GB, MIN_SIZE_GB, MAX_SIZE_GB,
                                   MIN_DURATION_DAYS, MAX_DURATION_DAYS, day_index)
+from core.storage_incentive import (StorageIncentive, MAX_INC_REPLICAS, MIN_INC_SIZE_GB,
+                                    MAX_INC_SIZE_GB, CHALLENGE_FILES, HEARTBEAT_INTERVAL)
 from core.compute import (ComputeMarket, RESULT_HASH_RE, MAX_WORKERS, MAX_SPEC_LEN,
-                          MIN_EXPIRES, MAX_EXPIRES)
+                          MIN_EXPIRES, MAX_EXPIRES, TASK_TYPES, IPFS_RE,
+                          MIN_COMPUTE_STAKE, MAX_COMPUTE_STAKE, COMPUTE_POOL,
+                          MAX_CPU, MAX_RAM_GB, MAX_STORAGE_GB, MAX_GPU_VRAM_GB, MAX_LATENCY_MS,
+                          SPEC_LEN_MAX)
+from core.ai_service import AIService, AI_FUND, TRIGGER_FEE
 from core.socialfi import SocialFi, TEXT_ESCROW
+from core.arbitration import Arbitration, ARB_STAKE, ARB_COMPLAINT_DEPOSIT
 from network.p2p import P2PNetwork
 from network.rpc import setup_routes
 from network.security import SecurityManager
@@ -35,8 +42,11 @@ class NovaNode:
         self.store = StateStore(genesis)
         self.economy = Economy(self.store)
         self.storage_net = StorageNetwork(self.store, self.economy)
+        self.storage_incentive = StorageIncentive(self.store, self.economy)
         self.compute_market = ComputeMarket(self.store, self.economy)
         self.socialfi = SocialFi(self.store, self.economy, self.storage_net)
+        self.arbitration = Arbitration(self.store, self.economy, self.socialfi)
+        self.ai_service = AIService(self.store, self.economy, self.compute_market, self.socialfi)
         self.security = SecurityManager()
         self.chat = ChatStore()
         if state_file:
@@ -67,6 +77,8 @@ class NovaNode:
         ai = self.socialfi.ai_identity(tx.sender)
         if ai is not None and not self.socialfi.ai_can_spend(tx.sender, tx.amount):
             return False  # AI 创作者日预算硬约束（链上强制）
+        if self.arbitration.cipher_locked(tx.sender, self._parse_op_data(tx)):
+            return False  # 恶意投诉名单：限制密文交易权限
         if self._is_stake_op(tx):
             if tx.data == "nova:stake":
                 if tx.amount < self.economy.MIN_STAKE or tx.amount > self.economy.MAX_STAKE:
@@ -89,11 +101,20 @@ class NovaNode:
         elif self._is_storage_op(tx):
             if not self._validate_storage_op(tx):
                 return False
+        elif self._is_storage_inc_op(tx):
+            if not self._validate_storage_inc_op(tx):
+                return False
         elif self._is_compute_op(tx):
             if not self._validate_compute_op(tx):
                 return False
+        elif self._is_ai_op(tx):
+            if not self._validate_ai_op(tx):
+                return False
         elif self._is_socialfi_op(tx):
             if not self._validate_socialfi_op(tx):
+                return False
+        elif self._is_arb_op(tx):
+            if not self._validate_arb_op(tx):
                 return False
         elif tx.amount == 0 and tx.receiver not in self.contracts:
             return False
@@ -105,8 +126,22 @@ class NovaNode:
     STAKE_OPS = ("nova:stake", "nova:unstake", "nova:claim")
     STORAGE_OPS = ("nova:storage:register", "nova:storage:pin", "nova:storage:claim",
                    "nova:storage:proof", "nova:storage:order")
-    COMPUTE_OPS = ("nova:compute:publish", "nova:compute:accept", "nova:compute:submit")
+    STORAGE_INC_OPS = ("nova:storage:inc:file", "nova:storage:inc:claim",
+                       "nova:storage:inc:prove", "nova:storage:inc:heartbeat",
+                       "nova:storage:inc:upgrade", "nova:storage:inc:exit",
+                       "nova:storage:inc:settle", "nova:storage:inc:protect",
+                       "nova:storage:inc:reassign", "nova:storage:inc:access",
+                       "nova:storage:inc:reupload")
+    COMPUTE_OPS = ("nova:compute:publish", "nova:compute:accept", "nova:compute:submit",
+                   "nova:compute:register", "nova:compute:bid", "nova:compute:award",
+                   "nova:compute:arbitrate", "nova:compute:dispute", "nova:compute:vote",
+                   "nova:compute:stake", "nova:compute:unstake", "nova:compute:claim",
+                   "nova:compute:audit")
+    AI_OPS = ("nova:ai:svc:register", "nova:ai:svc:config", "nova:ai:muso:config",
+              "nova:ai:work:create", "nova:ai:work:buy", "nova:ai:trigger",
+              "nova:ai:fund:guard", "nova:ai:fund:spend")
     SOCIALFI_OPS = tuple(SocialFi.OPS)
+    ARB_OPS = tuple(Arbitration.OPS)
 
     def _is_storage_op(self, tx):
         if tx.sender != tx.receiver:
@@ -114,11 +149,23 @@ class NovaNode:
         d = self._parse_op_data(tx)
         return isinstance(d, dict) and d.get("op") in self.STORAGE_OPS
 
+    def _is_storage_inc_op(self, tx):
+        if tx.sender != tx.receiver:
+            return False
+        d = self._parse_op_data(tx)
+        return isinstance(d, dict) and d.get("op") in self.STORAGE_INC_OPS
+
     def _is_compute_op(self, tx):
         if tx.sender != tx.receiver:
             return False
         d = self._parse_op_data(tx)
         return isinstance(d, dict) and d.get("op") in self.COMPUTE_OPS
+
+    def _is_ai_op(self, tx):
+        if tx.sender != tx.receiver:
+            return False
+        d = self._parse_op_data(tx)
+        return isinstance(d, dict) and d.get("op") in self.AI_OPS
 
     def _is_socialfi_op(self, tx):
         if tx.sender != tx.receiver:
@@ -126,8 +173,17 @@ class NovaNode:
         d = self._parse_op_data(tx)
         return isinstance(d, dict) and d.get("op") in self.SOCIALFI_OPS
 
+    def _is_arb_op(self, tx):
+        if tx.sender != tx.receiver:
+            return False
+        d = self._parse_op_data(tx)
+        return isinstance(d, dict) and d.get("op") in self.ARB_OPS
+
     def _validate_socialfi_op(self, tx):
         return self.socialfi.validate_op(tx)
+
+    def _validate_arb_op(self, tx):
+        return self.arbitration.validate_op(tx)
 
     @staticmethod
     def _parse_op_data(tx):
@@ -207,7 +263,9 @@ class NovaNode:
         d = self._parse_op_data(tx)
         if d is None:
             return False
-        if d.get("op") == "nova:compute:publish":
+        op = d.get("op")
+        addr = tx.sender
+        if op == "nova:compute:publish":
             spec = d.get("spec", "")
             exp = d.get("expires_in", 0)
             if not (isinstance(spec, str) and 0 < len(spec) <= MAX_SPEC_LEN):
@@ -215,26 +273,121 @@ class NovaNode:
             if not (isinstance(exp, (int, float)) and not isinstance(exp, bool)
                     and MIN_EXPIRES <= exp <= MAX_EXPIRES):
                 return False
+            tt = d.get("task_type")
+            if tt is not None and tt not in TASK_TYPES:
+                return False
+            mode = d.get("mode", "grab")
+            if mode not in ("grab", "bid"):
+                return False
+            mn = d.get("min_nodes", 2)
+            if not (isinstance(mn, int) and not isinstance(mn, bool) and 2 <= mn <= MAX_WORKERS):
+                return False
+            acc = d.get("acceptance", "")
+            if not (isinstance(acc, str) and len(acc) <= MAX_SPEC_LEN):
+                return False
             return isinstance(tx.amount, (int, float)) and not isinstance(tx.amount, bool) and tx.amount > 0
-        if d.get("op") == "nova:compute:accept":
+        if op == "nova:compute:accept":
             tid = d.get("task_id", "")
             if tx.amount != 0:
                 return False
-            task = self.store.compute_tasks.get(tid)
-            if not task or task["status"] != "open":
-                return False
-            if tx.sender == task["creator"] or tx.sender in task["accepted"]:
-                return False
-            return len(task["accepted"]) < MAX_WORKERS
-        if d.get("op") == "nova:compute:submit":
+            return self.compute_market.validate_accept(addr, tid)[0]
+        if op == "nova:compute:submit":
             tid = d.get("task_id", "")
             rh = d.get("result_hash", "")
+            rc = d.get("result_cid", "")
             if tx.amount != 0 or not RESULT_HASH_RE.match(rh):
                 return False
-            task = self.store.compute_tasks.get(tid)
-            if not task or task["status"] != "open":
+            return self.compute_market.validate_submit(addr, tid, rh, rc)[0]
+        if op == "nova:compute:register":
+            if tx.amount != 0:
                 return False
-            return tx.sender in task["accepted"] and tx.sender not in task["results"] and tx.sender != task["creator"]
+            cpu = d.get("cpu_cores", 0)
+            ram = d.get("ram_gb", 0)
+            storage = d.get("storage_gb", 0)
+            vram = d.get("gpu_vram_gb", 0)
+            latency = d.get("latency_ms", 50)
+            if not (isinstance(cpu, int) and not isinstance(cpu, bool) and 0 < cpu <= MAX_CPU):
+                return False
+            for v, lo, hi in ((ram, 0.5, MAX_RAM_GB), (storage, 1.0, MAX_STORAGE_GB),
+                              (vram, 0.0, MAX_GPU_VRAM_GB), (latency, 0.0, MAX_LATENCY_MS)):
+                if not (isinstance(v, (int, float)) and not isinstance(v, bool)
+                        and math.isfinite(v) and lo <= v <= hi):
+                    return False
+            gpu = d.get("gpu_model", "")
+            if not (isinstance(gpu, str) and len(gpu) <= SPEC_LEN_MAX):
+                return False
+            region = d.get("region", "")
+            return isinstance(region, str) and len(region) <= 32
+        if op == "nova:compute:bid":
+            tid = d.get("task_id", "")
+            price = d.get("price", 0)
+            if tx.amount != 0:
+                return False
+            return self.compute_market.validate_bid(addr, tid, price)[0]
+        if op == "nova:compute:award":
+            tid = d.get("task_id", "")
+            workers = d.get("workers", [])
+            if tx.amount != 0:
+                return False
+            return self.compute_market.validate_award(addr, tid, workers)[0]
+        if op == "nova:compute:arbitrate":
+            tid = d.get("task_id", "")
+            rh = d.get("result_hash", "")
+            if tx.amount != 0:
+                return False
+            return self.compute_market.validate_arbitrate(addr, tid, rh)[0]
+        if op == "nova:compute:dispute":
+            tid = d.get("task_id", "")
+            reason = d.get("reason", "")
+            if tx.amount != 0:
+                return False
+            return self.compute_market.validate_dispute(addr, tid, reason)[0]
+        if op == "nova:compute:vote":
+            tid = d.get("task_id", "")
+            support = d.get("support", "")
+            if tx.amount != 0:
+                return False
+            return self.compute_market.validate_vote(addr, tid, support)[0]
+        if op == "nova:compute:stake":
+            if tx.amount == 0:
+                return False
+            return self.compute_market.validate_stake(addr, tx.amount)[0]
+        if op == "nova:compute:unstake":
+            if tx.amount == 0:
+                return False
+            return self.compute_market.validate_unstake(addr, tx.amount)[0]
+        if op == "nova:compute:claim":
+            return tx.amount == 0 and self.compute_market.validate_claim(addr)[0]
+        if op == "nova:compute:audit":
+            tid = d.get("task_id", "")
+            rh = d.get("result_hash", "")
+            if tx.amount != 0:
+                return False
+            return self.compute_market.validate_audit(addr, tid, rh)[0]
+        return False
+
+    def _validate_ai_op(self, tx):
+        d = self._parse_op_data(tx)
+        if d is None:
+            return False
+        op = d.get("op")
+        addr = tx.sender
+        if op == "nova:ai:svc:register":
+            return tx.amount == 0 and self.ai_service.validate_svc_register(d, addr)[0]
+        if op == "nova:ai:svc:config":
+            return tx.amount == 0 and self.ai_service.validate_svc_config(d, addr)[0]
+        if op == "nova:ai:muso:config":
+            return tx.amount == 0 and self.ai_service.validate_muso_config(d, addr)[0]
+        if op == "nova:ai:work:create":
+            return tx.amount == 0 and self.ai_service.validate_work_create(d, addr)[0]
+        if op == "nova:ai:work:buy":
+            return self.ai_service.validate_work_buy(d, addr, tx.amount)[0]
+        if op == "nova:ai:trigger":
+            return self.ai_service.validate_trigger(d, addr, tx.amount)[0]
+        if op == "nova:ai:fund:guard":
+            return tx.amount == 0 and self.ai_service.validate_fund_guard(d, addr)[0]
+        if op == "nova:ai:fund:spend":
+            return self.ai_service.validate_fund_spend(d, addr, tx.amount)[0]
         return False
 
     def _apply_storage_op(self, tx):
@@ -243,6 +396,7 @@ class NovaNode:
         d = json.loads(tx.data)
         if d.get("op") == "nova:storage:register":
             self.storage_net.register(addr, d["capacity_gb"])
+            self.storage_incentive.auto_register(addr, d["capacity_gb"])
         elif d.get("op") == "nova:storage:pin":
             self.storage_net.pin(addr, d["cid"], d["size_gb"], d["duration_days"])
         elif d.get("op") == "nova:storage:claim":
@@ -253,18 +407,184 @@ class NovaNode:
             self.storage_net.create_order(addr, d["cid"], d["replicas"], d["duration_days"],
                                           tx.amount, tx.txid)
 
+    def _validate_storage_inc_op(self, tx):
+        """存储激励合约操作校验（链上硬约束）。"""
+        d = self._parse_op_data(tx)
+        if d is None:
+            return False
+        op = d.get("op")
+        if op == "nova:storage:inc:file":
+            cid = d.get("cid", "")
+            size = d.get("size_gb", 0)
+            commit = d.get("fragment_commit", "")
+            if tx.amount != 0 or not CID_RE.match(cid) or cid in self.store.inc_files:
+                return False
+            if not HEX64_RE.match(commit):
+                return False
+            return (isinstance(size, (int, float)) and not isinstance(size, bool)
+                    and MIN_INC_SIZE_GB <= size <= MAX_INC_SIZE_GB)
+        if op == "nova:storage:inc:claim":
+            cid = d.get("cid", "")
+            f = self.store.inc_files.get(cid)
+            if tx.amount != 0 or not CID_RE.match(cid) or not f:
+                return False
+            if tx.sender not in self.store.inc_nodes:
+                return False
+            if tx.sender in f.get("replicas", []) or len(f.get("replicas", [])) >= MAX_INC_REPLICAS:
+                return False
+            return self.storage_incentive.can_assign(tx.sender, f["size_gb"])
+        if op == "nova:storage:inc:prove":
+            day = d.get("day", 0)
+            files = d.get("files", [])
+            fragments = d.get("fragments", [])
+            if tx.amount != 0:
+                return False
+            if not isinstance(day, int) or isinstance(day, bool) or day < 0:
+                return False
+            node = self.store.inc_nodes.get(tx.sender)
+            if not node or node.get("last_proof_epoch") == day:
+                return False
+            if not isinstance(files, list) or not isinstance(fragments, list):
+                return False
+            if len(files) != len(fragments) or not files:
+                return False
+            if any(not CID_RE.match(c) for c in files):
+                return False
+            if any(not (isinstance(x, str) and len(x) == 2048) for x in fragments):
+                return False
+            ch = self.storage_incentive.current_challenge(tx.sender, day)
+            return bool(ch.get("found")) and list(files) == ch["files"]
+        if op == "nova:storage:inc:heartbeat":
+            return tx.amount == 0 and tx.sender in self.store.inc_nodes
+        if op == "nova:storage:inc:upgrade":
+            if tx.sender not in self.store.inc_nodes:
+                return False
+            return (isinstance(tx.amount, (int, float)) and not isinstance(tx.amount, bool)
+                    and math.isfinite(tx.amount) and tx.amount > 0)
+        if op == "nova:storage:inc:exit":
+            node = self.store.inc_nodes.get(tx.sender)
+            return tx.amount == 0 and bool(node) and not node.get("exit_at")
+        if op in ("nova:storage:inc:settle", "nova:storage:inc:protect", "nova:storage:inc:reassign"):
+            return tx.amount == 0
+        if op == "nova:storage:inc:access":
+            return tx.amount == 0 and CID_RE.match(d.get("cid", "")) and d.get("cid") in self.store.inc_files
+        if op == "nova:storage:inc:reupload":
+            old_cid = d.get("old_cid", "")
+            new_cid = d.get("new_cid", "")
+            commit = d.get("fragment_commit", "")
+            size = d.get("size_gb", 0)
+            f = self.store.inc_files.get(old_cid)
+            if tx.amount != 0 or not CID_RE.match(old_cid) or not CID_RE.match(new_cid):
+                return False
+            if not f or f.get("owner") != tx.sender or new_cid == old_cid:
+                return False
+            if new_cid in self.store.inc_files or not HEX64_RE.match(commit):
+                return False
+            return (isinstance(size, (int, float)) and not isinstance(size, bool)
+                    and MIN_INC_SIZE_GB <= size <= MAX_INC_SIZE_GB)
+        return False
+
+    def _apply_storage_inc_op(self, tx):
+        addr = tx.sender
+        self.balances[addr] = self.balances.get(addr, 0) - self.gas_of(addr)
+        d = json.loads(tx.data)
+        op = d.get("op")
+        if op == "nova:storage:inc:file":
+            self.storage_incentive.file_register(addr, d["cid"], d["size_gb"],
+                                                 d["fragment_commit"], d.get("title", ""),
+                                                 d.get("content_type", "music"))
+        elif op == "nova:storage:inc:claim":
+            self.storage_incentive.claim(addr, d["cid"])
+        elif op == "nova:storage:inc:prove":
+            self.storage_incentive.verify_proof(addr, d["day"], d["files"], d["fragments"])
+        elif op == "nova:storage:inc:heartbeat":
+            self.storage_incentive.heartbeat(addr)
+        elif op == "nova:storage:inc:upgrade":
+            self.storage_incentive.upgrade_quota(addr, tx.amount)
+        elif op == "nova:storage:inc:exit":
+            self.storage_incentive.exit_notice(addr)
+        elif op == "nova:storage:inc:settle":
+            # 结算上一个完整周期（与每日维护一致），避免提前惩罚当日未证明节点
+            self.storage_incentive.settle_epoch(day_index() - 1)
+        elif op == "nova:storage:inc:protect":
+            self.storage_incentive.protect_hot_files()
+        elif op == "nova:storage:inc:reassign":
+            self.storage_incentive.reassign_endangered()
+        elif op == "nova:storage:inc:access":
+            self.storage_incentive.record_access(d["cid"])
+        elif op == "nova:storage:inc:reupload":
+            self.storage_incentive.file_reupload(addr, d["old_cid"], d["new_cid"],
+                                                 d["size_gb"], d["fragment_commit"],
+                                                 d.get("title", ""))
+
     def _apply_compute_op(self, tx):
         addr = tx.sender
         self.balances[addr] = self.balances.get(addr, 0) - self.gas_of(addr)
         d = json.loads(tx.data)
-        if d.get("op") == "nova:compute:publish":
-            self.compute_market.publish(addr, d["spec"], tx.amount, d["expires_in"], tx.txid)
-        elif d.get("op") == "nova:compute:accept":
+        op = d.get("op")
+        if op == "nova:compute:publish":
+            self.compute_market.publish(addr, d["spec"], tx.amount, d["expires_in"], tx.txid,
+                                        task_type=d.get("task_type"), mode=d.get("mode", "grab"),
+                                        min_nodes=d.get("min_nodes", 2),
+                                        acceptance=d.get("acceptance", ""))
+        elif op == "nova:compute:accept":
             self.compute_market.expire(d["task_id"])
             self.compute_market.accept(addr, d["task_id"])
-        elif d.get("op") == "nova:compute:submit":
+        elif op == "nova:compute:submit":
             self.compute_market.expire(d["task_id"])
-            self.compute_market.submit(addr, d["task_id"], d["result_hash"])
+            self.compute_market.submit(addr, d["task_id"], d["result_hash"], d.get("result_cid", ""))
+        elif op == "nova:compute:register":
+            self.compute_market.register(addr, d["cpu_cores"], d.get("gpu_model", ""),
+                                         d.get("gpu_vram_gb", 0), d["ram_gb"], d["storage_gb"],
+                                         region=d.get("region", ""),
+                                         latency_ms=d.get("latency_ms", 50))
+        elif op == "nova:compute:bid":
+            self.compute_market.bid(addr, d["task_id"], d["price"])
+        elif op == "nova:compute:award":
+            self.compute_market.award(addr, d["task_id"], d["workers"])
+        elif op == "nova:compute:arbitrate":
+            self.compute_market.arbitrate(addr, d["task_id"], d["result_hash"])
+        elif op == "nova:compute:dispute":
+            self.compute_market.dispute(addr, d["task_id"], d.get("reason", ""))
+        elif op == "nova:compute:vote":
+            self.compute_market.vote(addr, d["task_id"], d["support"])
+        elif op == "nova:compute:stake":
+            self.compute_market.stake(addr, tx.amount)
+        elif op == "nova:compute:unstake":
+            self.compute_market.unstake(addr, tx.amount)
+        elif op == "nova:compute:claim":
+            self.compute_market.claim(addr)
+        elif op == "nova:compute:audit":
+            self.compute_market.audit_submit(addr, d["task_id"], d["result_hash"])
+
+    def _apply_ai_op(self, tx):
+        addr = tx.sender
+        self.balances[addr] = self.balances.get(addr, 0) - self.gas_of(addr)
+        d = json.loads(tx.data)
+        op = d.get("op")
+        if op == "nova:ai:svc:register":
+            self.ai_service.svc_register(addr, tx.txid, d)
+        elif op == "nova:ai:svc:config":
+            self.ai_service.svc_config(addr, d)
+        elif op == "nova:ai:muso:config":
+            self.ai_service.muso_config(addr, d)
+        elif op == "nova:ai:work:create":
+            self.ai_service.work_create(addr, tx.txid, d)
+        elif op == "nova:ai:work:buy":
+            self.ai_service.work_buy(addr, d["wid"], tx.amount)
+        elif op == "nova:ai:trigger":
+            self.ai_service.trigger(addr, tx.txid, d, tx.amount)
+        elif op == "nova:ai:fund:guard":
+            self.ai_service.fund_guard(addr, d)
+        elif op == "nova:ai:fund:spend":
+            self.ai_service.fund_spend(addr, d, tx.amount)
+
+    def _apply_arb_op(self, tx):
+        """仲裁合约操作：金额随交易上链（质押/保证金），合约内部完成锁定与释放。"""
+        addr = tx.sender
+        gas = self.gas_of(addr)
+        self.balances[addr] = self.balances.get(addr, 0) - (tx.amount + gas)
+        self.arbitration.apply_op(tx)
 
     def gas_of(self, addr) -> float:
         """声誉驱动的交易费：信誉分 >= 80 享受 50% 折扣。"""
@@ -280,7 +600,9 @@ class NovaNode:
             return
         if tx.sender == "0x0000":
             gas = 0.0
-        elif self._is_stake_op(tx) or self._is_storage_op(tx) or self._is_compute_op(tx) or self._is_socialfi_op(tx):
+        elif (self._is_stake_op(tx) or self._is_storage_op(tx) or self._is_storage_inc_op(tx)
+              or self._is_compute_op(tx) or self._is_ai_op(tx) or self._is_socialfi_op(tx)
+              or self._is_arb_op(tx)):
             gas = self.gas_of(tx.sender)
         else:
             gas = self.economy.FIXED_GAS
@@ -304,6 +626,8 @@ class NovaNode:
         if tx.data == "nova:stake":
             self.balances[addr] = self.balances.get(addr, 0) - (tx.amount + gas)
             self.store.stakes[addr] = self.store.stakes.get(addr, 0) + tx.amount
+            # 超级节点自动注册为存储节点（激励系统，无需额外配置）
+            self.storage_incentive.auto_register(addr)
             # 早期矿工注册 + 前置空投（随交易确定性复制到全节点）
             if addr not in self.store.miner_registry and len(self.store.miner_registry) < 81:
                 self.store.miner_registry[addr] = time.time()
@@ -336,12 +660,21 @@ class NovaNode:
         if self._is_storage_op(tx):
             self._apply_storage_op(tx)
             return
+        if self._is_storage_inc_op(tx):
+            self._apply_storage_inc_op(tx)
+            return
         if self._is_compute_op(tx):
             self._apply_compute_op(tx)
+            return
+        if self._is_ai_op(tx):
+            self._apply_ai_op(tx)
             return
         if self._is_socialfi_op(tx):
             self.balances[tx.sender] = self.balances.get(tx.sender, 0) - self.gas_of(tx.sender)
             self.socialfi.apply_op(tx)
+            return
+        if self._is_arb_op(tx):
+            self._apply_arb_op(tx)
             return
         old_balance = self.balances.get(tx.receiver, 0)
         self.balances[tx.sender] = self.balances.get(tx.sender, 0) - (tx.amount + self.economy.FIXED_GAS)
@@ -500,12 +833,30 @@ class NovaNode:
             if self.store.miner_uptime[addr] >= 270 * 86400:
                 self.store.miner_qualified.add(addr)
         self.storage_net.settle_expired()
-        self.compute_market.expire_all()
+        # 存储激励：结算昨日奖励、扫描离线、热门文件保护、濒危恢复、退出迁移
+        self.storage_incentive.settle_epoch(day_index() - 1)
+        self.storage_incentive.finalize_exits()
+        self.storage_incentive.scan_offline()
+        self.storage_incentive.protect_hot_files(day_index() - 2)
+        self.storage_incentive.reassign_endangered()
+        self.compute_market.maintain()
+        self.ai_service.maintain()
         self.socialfi.maintain()
+        self.arbitration.maintain()
         self.economy.release_early_rewards()
         if self.state_file:
             self.save_state()
         print("[MAINT] 每日维护完成")
+
+    async def _storage_monitor_loop(self):
+        """存储节点监控：每 5 分钟扫描心跳（30 分钟超时判离线）并自动恢复濒危文件。"""
+        while True:
+            await asyncio.sleep(HEARTBEAT_INTERVAL)
+            try:
+                self.storage_incentive.scan_offline()
+                self.storage_incentive.reassign_endangered()
+            except Exception as e:
+                print(f"[STORAGE-MONITOR] 监控失败: {e}")
 
     async def _autosave_loop(self):
         while True:
@@ -543,7 +894,13 @@ class NovaNode:
             "validator":self.validator.address if self.validator else None,
             "storage_providers":len(self.store.storage_providers),
             "pins":len(self.store.storage_claims),
+            "storage_nodes":len(self.store.inc_nodes),
+            "storage_files":len(self.store.inc_files),
             "compute_tasks":len(self.store.compute_tasks),
+            "compute_nodes": len(self.store.compute_nodes),
+            "compute_stakes": round(sum(self.store.compute_stakes.values()), 8),
+            "ai_works": len(self.store.ai_works),
+            "ai_fund": self.store.balances.get(AI_FUND, 0.0),
             "fan_tokens":len(self.store.fan_tokens),
             "markets":len(self.store.markets),
             "socialfi_events":len(self.store.socialfi_events),
@@ -1032,6 +1389,233 @@ class NovaNode:
         self.storage_net.settle_expired()
         return web.json_response({"orders": self.store.storage_orders})
 
+    # ---------- 存储激励 RPC（存储状态 / 节点 / 挑战证明 / 收益 / 监控） ----------
+    async def rpc_storage_inc_file(self, req):
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        b = await self._read_json(req)
+        if not isinstance(b, dict) or not b.get("addr") or not b.get("cid") or not b.get("fragment_commit"):
+            return web.json_response({"error": "缺少 addr/cid/fragment_commit"}, status=400)
+        try:
+            data = json.dumps({"op": "nova:storage:inc:file", "cid": str(b["cid"]),
+                               "size_gb": float(b["size_gb"]), "fragment_commit": str(b["fragment_commit"]),
+                               "title": str(b.get("title", "")), "content_type": str(b.get("content_type", "music"))},
+                              ensure_ascii=False)
+        except (KeyError, TypeError, ValueError):
+            return web.json_response({"error": "参数无效"}, status=400)
+        tx = self._special_tx(b, data)
+        if not self.validate_tx(tx):
+            return web.json_response({"error": "交易校验失败（签名/规则）"}, status=400)
+        await self.broadcast_tx(tx)
+        return web.json_response({"status": "文件已登记（片段承诺已上链）", "cid": b["cid"], "txid": tx.txid})
+
+    async def rpc_storage_inc_claim(self, req):
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        b = await self._read_json(req)
+        if not isinstance(b, dict) or not b.get("addr") or not b.get("cid"):
+            return web.json_response({"error": "缺少 addr/cid"}, status=400)
+        data = json.dumps({"op": "nova:storage:inc:claim", "cid": str(b["cid"])})
+        tx = self._special_tx(b, data)
+        if not self.validate_tx(tx):
+            return web.json_response({"error": "交易校验失败（签名/规则）"}, status=400)
+        await self.broadcast_tx(tx)
+        return web.json_response({"status": "已认领存储", "cid": b["cid"], "txid": tx.txid})
+
+    async def rpc_storage_prove(self, req):
+        """节点提交存储证明：返回挑战文件的正确片段（前 1KB）。"""
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        b = await self._read_json(req)
+        if not isinstance(b, dict) or not b.get("addr"):
+            return web.json_response({"error": "缺少 addr"}, status=400)
+        try:
+            day = int(b.get("day", self.storage_incentive.current_challenge(b["addr"]).get("day", 0)))
+            files = [str(x) for x in b.get("files", [])]
+            fragments = [str(x) for x in b.get("fragments", [])]
+        except (TypeError, ValueError):
+            return web.json_response({"error": "参数无效"}, status=400)
+        data = json.dumps({"op": "nova:storage:inc:prove", "day": day,
+                           "files": files, "fragments": fragments}, ensure_ascii=False)
+        tx = self._special_tx(b, data)
+        if not self.validate_tx(tx):
+            return web.json_response({"error": "交易校验失败（签名/规则/挑战不匹配）"}, status=400)
+        await self.broadcast_tx(tx)
+        return web.json_response({"status": "已提交存储证明", "day": day, "txid": tx.txid})
+
+    async def rpc_storage_heartbeat(self, req):
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        b = await self._read_json(req)
+        if not isinstance(b, dict) or not b.get("addr"):
+            return web.json_response({"error": "缺少 addr"}, status=400)
+        tx = self._special_tx(b, json.dumps({"op": "nova:storage:inc:heartbeat"}))
+        if not self.validate_tx(tx):
+            return web.json_response({"error": "交易校验失败（签名/规则）"}, status=400)
+        await self.broadcast_tx(tx)
+        return web.json_response({"status": "心跳已记录", "txid": tx.txid})
+
+    async def rpc_storage_inc_upgrade(self, req):
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        b = await self._read_json(req)
+        if not isinstance(b, dict) or not b.get("addr"):
+            return web.json_response({"error": "缺少 addr"}, status=400)
+        amount = b.get("amount", 0)
+        if not isinstance(amount, (int, float)) or isinstance(amount, bool) or not math.isfinite(amount) or amount <= 0:
+            return web.json_response({"error": "质押金额无效"}, status=400)
+        tx = self._special_tx(b, json.dumps({"op": "nova:storage:inc:upgrade"}), amount)
+        if not self.validate_tx(tx):
+            return web.json_response({"error": "交易校验失败（签名/规则）"}, status=400)
+        await self.broadcast_tx(tx)
+        return web.json_response({"status": "配额升级质押已提交", "txid": tx.txid})
+
+    async def rpc_storage_inc_exit(self, req):
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        b = await self._read_json(req)
+        if not isinstance(b, dict) or not b.get("addr"):
+            return web.json_response({"error": "缺少 addr"}, status=400)
+        tx = self._special_tx(b, json.dumps({"op": "nova:storage:inc:exit"}))
+        if not self.validate_tx(tx):
+            return web.json_response({"error": "交易校验失败（签名/规则）"}, status=400)
+        await self.broadcast_tx(tx)
+        return web.json_response({"status": "已声明退出，7 天后迁移数据并释放质押", "txid": tx.txid})
+
+    async def rpc_storage_inc_settle(self, req):
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        b = await self._read_json(req)
+        if not isinstance(b, dict):
+            return web.json_response({"error": "缺少参数"}, status=400)
+        tx = self._special_tx(b, json.dumps({"op": "nova:storage:inc:settle"}))
+        if not self.validate_tx(tx):
+            return web.json_response({"error": "交易校验失败"}, status=400)
+        await self.broadcast_tx(tx)
+        return web.json_response({"status": "已触发结算", "txid": tx.txid})
+
+    async def rpc_storage_inc_protect(self, req):
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        b = await self._read_json(req)
+        if not isinstance(b, dict):
+            return web.json_response({"error": "缺少参数"}, status=400)
+        tx = self._special_tx(b, json.dumps({"op": "nova:storage:inc:protect"}))
+        if not self.validate_tx(tx):
+            return web.json_response({"error": "交易校验失败"}, status=400)
+        await self.broadcast_tx(tx)
+        return web.json_response({"status": "已触发热门文件保护", "txid": tx.txid})
+
+    async def rpc_storage_inc_reassign(self, req):
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        b = await self._read_json(req)
+        if not isinstance(b, dict):
+            return web.json_response({"error": "缺少参数"}, status=400)
+        tx = self._special_tx(b, json.dumps({"op": "nova:storage:inc:reassign"}))
+        if not self.validate_tx(tx):
+            return web.json_response({"error": "交易校验失败"}, status=400)
+        await self.broadcast_tx(tx)
+        return web.json_response({"status": "已触发濒危文件自动恢复", "txid": tx.txid})
+
+    async def rpc_storage_inc_access(self, req):
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        b = await self._read_json(req)
+        if not isinstance(b, dict) or not b.get("addr") or not b.get("cid"):
+            return web.json_response({"error": "缺少 addr/cid"}, status=400)
+        tx = self._special_tx(b, json.dumps({"op": "nova:storage:inc:access", "cid": str(b["cid"])}))
+        if not self.validate_tx(tx):
+            return web.json_response({"error": "交易校验失败（签名/规则）"}, status=400)
+        await self.broadcast_tx(tx)
+        return web.json_response({"status": "访问量已记录", "txid": tx.txid})
+
+    async def rpc_storage_inc_reupload(self, req):
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        b = await self._read_json(req)
+        if not isinstance(b, dict) or not b.get("addr") or not b.get("old_cid") or not b.get("new_cid"):
+            return web.json_response({"error": "缺少 addr/old_cid/new_cid"}, status=400)
+        try:
+            data = json.dumps({"op": "nova:storage:inc:reupload", "old_cid": str(b["old_cid"]),
+                               "new_cid": str(b["new_cid"]), "size_gb": float(b["size_gb"]),
+                               "fragment_commit": str(b["fragment_commit"]),
+                               "title": str(b.get("title", ""))}, ensure_ascii=False)
+        except (KeyError, TypeError, ValueError):
+            return web.json_response({"error": "参数无效"}, status=400)
+        tx = self._special_tx(b, data)
+        if not self.validate_tx(tx):
+            return web.json_response({"error": "交易校验失败（签名/规则）"}, status=400)
+        await self.broadcast_tx(tx)
+        return web.json_response({"status": "已重新上传并替换 IPFS 哈希", "txid": tx.txid})
+
+    async def rpc_storage_status(self, req):
+        """GET /api/storage/status/{file_hash}：查询文件存储状态（🟢/🟡/🔴）。"""
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        cid = req.match_info.get("file_hash", "")
+        st = self.storage_incentive.file_status(cid)
+        if not st.get("found"):
+            return web.json_response({"error": "文件未登记", "cid": cid}, status=404)
+        return web.json_response(st)
+
+    async def rpc_storage_nodes(self, req):
+        """GET /api/storage/nodes：查询全网存储节点列表（含配额/在线/收益/健康度）。"""
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        nodes = {}
+        for addr in self.store.inc_nodes:
+            st = self.storage_incentive.node_stats(addr)
+            nodes[addr] = st
+        return web.json_response({"nodes": nodes, "total": len(nodes)})
+
+    async def rpc_storage_challenge(self, req):
+        """GET /api/storage/nodes/{addr}/challenge：获取节点当前存储证明挑战。"""
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        addr = req.match_info.get("addr", "")
+        return web.json_response(self.storage_incentive.current_challenge(addr))
+
+    async def rpc_storage_revenue(self, req):
+        """GET /api/storage/nodes/{addr}/revenue：节点存储收益统计。"""
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        addr = req.match_info.get("addr", "")
+        st = self.storage_incentive.node_stats(addr)
+        if not st.get("found"):
+            return web.json_response({"error": "节点未注册", "addr": addr}, status=404)
+        return web.json_response(st)
+
+    async def rpc_storage_creator(self, req):
+        """GET /api/storage/creator/{addr}：创作者面板（已发布文件存储状态 + 事件通知）。"""
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        addr = req.match_info.get("addr", "")
+        files = []
+        for cid, f in self.store.inc_files.items():
+            if f.get("owner") != addr:
+                continue
+            st = self.storage_incentive.file_status(cid)
+            files.append(st)
+        events = [e for e in self.store.inc_events.values() if e.get("creator") == addr]
+        events.sort(key=lambda e: e.get("at", 0), reverse=True)
+        return web.json_response({"addr": addr, "files": files, "events": events[:50],
+                                  "unread": sum(1 for e in events if not e.get("read"))})
+
+    async def rpc_storage_events(self, req):
+        """GET /api/storage/events[?addr=]：链上存储事件（创作者通知/惩罚记录）。"""
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        addr = req.query.get("addr", "")
+        events = [e for e in self.store.inc_events.values() if not addr or e.get("creator") == addr]
+        events.sort(key=lambda e: e.get("at", 0), reverse=True)
+        return web.json_response({"events": events[:100], "total": len(self.store.inc_events)})
+
+    async def rpc_storage_inc_summary(self, req):
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        return web.json_response(self.storage_incentive.summary())
+
     # ---------- 算力任务 RPC ----------
     async def rpc_compute_publish(self, req):
         guard = await self._rpc_guard(req)
@@ -1082,7 +1666,99 @@ class NovaNode:
         guard = await self._rpc_guard(req)
         if guard: return guard
         self.compute_market.expire_all()
-        return web.json_response({"tasks": self.store.compute_tasks})
+        return web.json_response({"tasks": self._ser(self.store.compute_tasks)})
+
+    async def rpc_compute_register(self, req):
+        """POST /api/compute/register：节点声明算力规格（CPU/GPU/内存/存储）。"""
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        b = await self._read_json(req)
+        if not isinstance(b, dict) or not b.get("addr"):
+            return web.json_response({"error": "缺少 addr"}, status=400)
+        try:
+            data = json.dumps({
+                "op": "nova:compute:register",
+                "cpu_cores": int(b["cpu_cores"]),
+                "gpu_model": str(b.get("gpu_model", "")),
+                "gpu_vram_gb": float(b.get("gpu_vram_gb", 0)),
+                "ram_gb": float(b["ram_gb"]),
+                "storage_gb": float(b["storage_gb"]),
+                "region": str(b.get("region", "")),
+                "latency_ms": float(b.get("latency_ms", 50)),
+            }, ensure_ascii=False)
+        except (KeyError, TypeError, ValueError):
+            return web.json_response({"error": "参数无效"}, status=400)
+        tx = self._special_tx(b, data)
+        if not self.validate_tx(tx):
+            return web.json_response({"error": "交易校验失败（签名/规则）"}, status=400)
+        await self.broadcast_tx(tx)
+        return web.json_response({"status": "算力节点已注册", "txid": tx.txid})
+
+    async def rpc_compute_nodes(self, req):
+        """GET /api/compute/nodes：算力节点列表（规格/信誉/质押/收益，公开可查）。"""
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        nodes = {}
+        seen = set(self.store.compute_nodes)
+        for addr in self.store.compute_nodes:
+            nodes[addr] = self.compute_market.node_view(addr)
+        # 超级节点自动具备算力提供资格
+        auto = (set(self.store.stakes) | set(self.store.miner_registry) | set(self.store.inc_nodes))
+        for addr in auto:
+            if addr not in seen:
+                nodes[addr] = self.compute_market.node_view(addr)
+        return web.json_response({"nodes": nodes, "total": len(nodes)})
+
+    async def rpc_compute_node(self, req):
+        """GET /api/compute/node/{addr}：单节点详情（规格/信誉/收益）。"""
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        addr = req.match_info.get("addr", "")
+        v = self.compute_market.node_view(addr)
+        if not v.get("found"):
+            return web.json_response({"error": "节点未注册", "addr": addr}, status=404)
+        return web.json_response(v)
+
+    async def rpc_compute_income(self, req):
+        """GET /api/compute/income/{addr}：节点收益统计接口。"""
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        addr = req.match_info.get("addr", "")
+        return web.json_response(self.compute_market.node_income(addr))
+
+    async def rpc_compute_overview(self, req):
+        """GET /api/compute/overview：算力网络总览（节点/任务/质押/审计/激励池/参考价）。"""
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        return web.json_response(self._ser(self.compute_market.overview()))
+
+    async def rpc_compute_events(self, req):
+        """GET /api/compute/events：算力网络链上事件流。"""
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        return web.json_response({"events": self._ser(self.compute_market.events())})
+
+    # ---------- AI 生成服务 RPC（提示词 3） ----------
+    async def rpc_ai_services(self, req):
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        return web.json_response({"services": self._ser(self.store.ai_services)})
+
+    async def rpc_ai_works(self, req):
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        works = sorted(self.store.ai_works.values(), key=lambda w: w.get("created_at", 0), reverse=True)
+        return web.json_response({"works": self._ser(works), "total": len(works)})
+
+    async def rpc_ai_fund(self, req):
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        return web.json_response(self._ser(self.ai_service.fund_view()))
+
+    async def rpc_ai_status(self, req):
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        return web.json_response(self._ser(self.ai_service.overview()))
 
     # ---------- SocialFi RPC（粉丝经济/预测市场/盲盒/策展/社交图谱/债券/碎片 NFT） ----------
     @staticmethod
@@ -1210,6 +1886,79 @@ class NovaNode:
             "task_spec": self.socialfi.recommend_task_spec(addr),
             "graph_hash": self.socialfi.graph_hash(),
         })
+    # ---------- 社区仲裁 RPC ----------
+    async def rpc_arb_summary(self, req):
+        """GET /api/arb/summary：仲裁系统全局概况。"""
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        return web.json_response(self.arbitration.summary())
+
+    async def rpc_arb_arbitrators(self, req):
+        """GET /api/arb/arbitrators：在职仲裁员列表（地址/信誉分/累计案件数）。"""
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        return web.json_response({"arbitrators": self.arbitration.list_arbitrators(),
+                                  "total": len(self.store.arb_arbitrators)})
+
+    async def rpc_arb_candidates(self, req):
+        """GET /api/arb/candidates：候选池（地址/申请时间/投票状态）。"""
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        return web.json_response({"candidates": self.arbitration.list_candidates(),
+                                  "total": len(self.store.arb_candidates)})
+
+    async def rpc_arb_cases(self, req):
+        """GET /api/arb/cases：案件公示列表（已裁决公开，在途匿名）。"""
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        viewer = req.query.get("viewer", "")
+        return web.json_response({"cases": self.arbitration.list_cases(viewer),
+                                  "total": len(self.store.arb_cases)})
+
+    async def rpc_arb_case(self, req):
+        """GET /api/arb/cases/{case_id}：案件详情（当事人匿名，仅编号）。"""
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        cid = req.match_info.get("case_id", "")
+        viewer = req.query.get("viewer", "")
+        pub = self.arbitration.case_public(cid, viewer)
+        if not pub:
+            return web.json_response({"error": "案件不存在", "case_id": cid}, status=404)
+        return web.json_response(pub)
+
+    async def rpc_arb_user(self, req):
+        """GET /api/arb/user/{addr}：普通用户面板（我的投诉/历史/保证金档位）。"""
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        addr = req.match_info.get("addr", "")
+        return web.json_response(self.arbitration.user_panel(addr))
+
+    async def rpc_arb_panel(self, req):
+        """GET /api/arb/panel/{addr}：仲裁员面板（待处理/裁决历史/信誉分收益/任期）。"""
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        addr = req.match_info.get("addr", "")
+        return web.json_response(self.arbitration.arbitrator_panel(addr))
+
+    async def rpc_arb_notifications(self, req):
+        """GET /api/arb/notifications/{addr}：链上通知列表。"""
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        addr = req.match_info.get("addr", "")
+        return web.json_response({"notifications": self.arbitration.notifications(addr),
+                                  "unread": sum(1 for n in self.arbitration.notifications(addr)
+                                                if not n.get("read"))})
+
+    async def rpc_arb_read(self, req):
+        """POST /api/arb/notifications/read：标记通知已读。"""
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        b = await self._read_json(req)
+        if not isinstance(b, dict) or not b.get("addr"):
+            return web.json_response({"error": "缺少 addr"}, status=400)
+        n = self.arbitration.mark_read(str(b["addr"]), b.get("ids"))
+        return web.json_response({"status": "ok", "marked": n})
+
     # ---------- 启动 ----------
     async def start(self):
         await self.p2p.start_server()
@@ -1229,6 +1978,7 @@ class NovaNode:
             self.save_state()
             asyncio.create_task(self._autosave_loop())
         asyncio.create_task(self._maintenance_loop())
+        asyncio.create_task(self._storage_monitor_loop())
         asyncio.create_task(self.consensus.checkpoint_loop())
         try:
             await self.p2p.server.serve_forever()
@@ -1259,3 +2009,10 @@ if __name__ == "__main__":
                     consensus_mode=a.consensus, validator_key=a.validator_key or None,
                     epoch_len=a.epoch_len)
     asyncio.run(node.start())
+
+
+
+
+
+
+

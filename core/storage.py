@@ -42,8 +42,37 @@ class StateStore:
         self.storage_seals: Dict[str, dict] = {}
         self.storage_orders: Dict[str, dict] = {}
         self.storage_rewards: Dict[str, float] = {}
+        # 存储激励合约状态（超级节点存储挖矿 / 挑战证明 / 奖惩 / 监控恢复）
+        self.inc_nodes: Dict[str, dict] = {}          # 存储节点：配额/心跳/收益/退出
+        self.inc_files: Dict[str, dict] = {}          # 存储文件：片段承诺/副本列表/健康度
+        self.inc_rewards: Dict[str, float] = {}       # 累计奖励（含保护/接管付费）
+        self.inc_events: Dict[str, dict] = {}         # 链上事件（创作者通知/惩罚）
+        self.inc_event_seq: int = 0
+        self.inc_access_counts: Dict[int, dict] = {}  # 每日访问量统计（热门保护）
+        self.inc_settled_epochs: set = set()          # 已结算周期
+        self.inc_slashed: float = 0.0                 # 累计罚没（进入生态基金）
         # 算力任务市场状态
         self.compute_tasks: Dict[str, dict] = {}
+        # 算力网络：节点注册/信誉/质押/竞价/争议/抽查/事件
+        self.compute_nodes: Dict[str, dict] = {}
+        self.compute_stats: Dict[str, dict] = {}
+        self.compute_stakes: Dict[str, float] = {}
+        self.compute_unbonding: Dict[str, tuple] = {}
+        self.compute_bids: Dict[str, list] = {}
+        self.compute_disputes: Dict[str, dict] = {}
+        self.compute_audits: Dict[str, dict] = {}
+        self.compute_events: Dict[str, dict] = {}
+        self.compute_event_seq: int = 0
+        self.compute_slashed: float = 0.0
+        self.last_incentive_epoch: float = 0.0
+        # AI 生成服务：服务登记 / 音乐人循环 / 作品 / 触发 / 成长基金
+        self.ai_services: Dict[str, dict] = {}
+        self.ai_muso: dict = {}
+        self.ai_works: Dict[str, dict] = {}
+        self.ai_triggers: Dict[str, dict] = {}
+        self.ai_fund_ledger: Dict[str, dict] = {}
+        self.ai_fund_seq: int = 0
+        self.ai_fund_guardians: Set[str] = set()
         # SocialFi: fan tokens / revenue / achievement / market / blindbox / curation / graph / bond / fraction
         self.fan_tokens: Dict[str, dict] = {}
         self.revenue_shares: Dict[str, dict] = {}
@@ -65,6 +94,22 @@ class StateStore:
         self.text_reputation: Dict[str, float] = {}
         self.text_contract_priv: str = ""
         self.socialfi_events: Dict[str, dict] = {}
+        # 链上社区仲裁合约：仲裁员/候选池/案件/通知/信誉分/质押/防串通
+        self.arb_arbitrators: Dict[str, dict] = {}     # 在职仲裁员（质押/信誉分/任期/累计裁决）
+        self.arb_candidates: Dict[str, dict] = {}      # 候选池（申请时间/投票状态）
+        self.arb_cases: Dict[str, dict] = {}           # 仲裁案件（面板/投票/裁决/赔付）
+        self.arb_case_seq: int = 0
+        self.arb_notifications: Dict[str, list] = {}   # 链上通知（被抽中/结果/任期提醒）
+        self.arb_notif_seq: int = 0
+        self.arb_events: list = []                     # 公开案件公示
+        self.arb_event_seq: int = 0
+        self.arb_vrf_seed: str = "0x9a2b" + "0" * 62   # VRF 种子链（每次抽取前滚）
+        self.arb_banned: Set[str] = set()              # 永久取消资格
+        self.arb_suspicious: Dict[str, dict] = {}      # 可疑仲裁员（7 天观察期）
+        self.arb_malicious: Dict[str, dict] = {}       # 恶意投诉名单（保证金 50 / 锁密文）
+        self.arb_stake_pending: Dict[str, list] = {}   # 质押冷静期返还 [金额, 到期时间]
+        self.arb_pools: Dict[str, float] = {}          # 保证金池（投诉/二次/候选质押）
+        self.arb_slashed: float = 0.0                  # 累计罚没（进入生态基金）
 
         self._load_genesis(genesis_file)
     def to_dict(self):
@@ -103,7 +148,33 @@ class StateStore:
             "storage_seals": self.storage_seals,
             "storage_orders": self.storage_orders,
             "storage_rewards": self.storage_rewards,
+            "inc_nodes": self.inc_nodes,
+            "inc_files": self.inc_files,
+            "inc_rewards": self.inc_rewards,
+            "inc_events": self.inc_events,
+            "inc_event_seq": self.inc_event_seq,
+            "inc_access_counts": {str(k): v for k, v in self.inc_access_counts.items()},
+            "inc_settled_epochs": sorted(self.inc_settled_epochs),
+            "inc_slashed": self.inc_slashed,
             "compute_tasks": self.compute_tasks,
+            "compute_nodes": self.compute_nodes,
+            "compute_stats": self.compute_stats,
+            "compute_stakes": self.compute_stakes,
+            "compute_unbonding": {k: [v[0], v[1]] for k, v in self.compute_unbonding.items()},
+            "compute_bids": self.compute_bids,
+            "compute_disputes": self.compute_disputes,
+            "compute_audits": self.compute_audits,
+            "compute_events": self.compute_events,
+            "compute_event_seq": self.compute_event_seq,
+            "compute_slashed": self.compute_slashed,
+            "last_incentive_epoch": self.last_incentive_epoch,
+            "ai_services": self.ai_services,
+            "ai_muso": self.ai_muso,
+            "ai_works": self.ai_works,
+            "ai_triggers": self.ai_triggers,
+            "ai_fund_ledger": self.ai_fund_ledger,
+            "ai_fund_seq": self.ai_fund_seq,
+            "ai_fund_guardians": sorted(self.ai_fund_guardians),
             "fan_tokens": {k: {**v, "voted": {pk: sorted(pv) for pk, pv in v.get("voted", {}).items()}}
                              for k, v in self.fan_tokens.items()},
             "revenue_shares": self.revenue_shares,
@@ -121,6 +192,21 @@ class StateStore:
             "text_reputation": self.text_reputation,
             "text_contract_priv": self.text_contract_priv,
             "socialfi_events": self.socialfi_events,
+            "arb_arbitrators": self.arb_arbitrators,
+            "arb_candidates": self.arb_candidates,
+            "arb_cases": self.arb_cases,
+            "arb_case_seq": self.arb_case_seq,
+            "arb_notifications": self.arb_notifications,
+            "arb_notif_seq": self.arb_notif_seq,
+            "arb_events": self.arb_events,
+            "arb_event_seq": self.arb_event_seq,
+            "arb_vrf_seed": self.arb_vrf_seed,
+            "arb_banned": sorted(self.arb_banned),
+            "arb_suspicious": self.arb_suspicious,
+            "arb_malicious": self.arb_malicious,
+            "arb_stake_pending": self.arb_stake_pending,
+            "arb_pools": self.arb_pools,
+            "arb_slashed": self.arb_slashed,
             "ai_creators": self.ai_creators,
             "ai_daily_spend": self.ai_daily_spend,
         }
@@ -160,7 +246,33 @@ class StateStore:
         self.storage_seals = dict(d.get("storage_seals", {}))
         self.storage_orders = dict(d.get("storage_orders", {}))
         self.storage_rewards = {k: float(v) for k, v in d.get("storage_rewards", {}).items()}
+        self.inc_nodes = dict(d.get("inc_nodes", {}))
+        self.inc_files = dict(d.get("inc_files", {}))
+        self.inc_rewards = {k: float(v) for k, v in d.get("inc_rewards", {}).items()}
+        self.inc_events = dict(d.get("inc_events", {}))
+        self.inc_event_seq = int(d.get("inc_event_seq", 0))
+        self.inc_access_counts = {int(k): v for k, v in d.get("inc_access_counts", {}).items()}
+        self.inc_settled_epochs = set(int(x) for x in d.get("inc_settled_epochs", []))
+        self.inc_slashed = float(d.get("inc_slashed", 0.0))
         self.compute_tasks = dict(d.get("compute_tasks", {}))
+        self.compute_nodes = dict(d.get("compute_nodes", {}))
+        self.compute_stats = dict(d.get("compute_stats", {}))
+        self.compute_stakes = {k: float(v) for k, v in d.get("compute_stakes", {}).items()}
+        self.compute_unbonding = {k: (float(v[0]), float(v[1])) for k, v in d.get("compute_unbonding", {}).items()}
+        self.compute_bids = dict(d.get("compute_bids", {}))
+        self.compute_disputes = dict(d.get("compute_disputes", {}))
+        self.compute_audits = dict(d.get("compute_audits", {}))
+        self.compute_events = dict(d.get("compute_events", {}))
+        self.compute_event_seq = int(d.get("compute_event_seq", 0))
+        self.compute_slashed = float(d.get("compute_slashed", 0.0))
+        self.last_incentive_epoch = float(d.get("last_incentive_epoch", 0.0))
+        self.ai_services = dict(d.get("ai_services", {}))
+        self.ai_muso = dict(d.get("ai_muso", {})) if d.get("ai_muso") else {}
+        self.ai_works = dict(d.get("ai_works", {}))
+        self.ai_triggers = dict(d.get("ai_triggers", {}))
+        self.ai_fund_ledger = dict(d.get("ai_fund_ledger", {}))
+        self.ai_fund_seq = int(d.get("ai_fund_seq", 0))
+        self.ai_fund_guardians = set(d.get("ai_fund_guardians", []))
         self.fan_tokens = {k: {**v, "voted": {pk: set(pv) for pk, pv in v.get("voted", {}).items()}}
                            for k, v in d.get("fan_tokens", {}).items()}
         self.revenue_shares = dict(d.get("revenue_shares", {}))
@@ -178,6 +290,21 @@ class StateStore:
         self.text_reputation = {k: float(v) for k, v in d.get("text_reputation", {}).items()}
         self.text_contract_priv = str(d.get("text_contract_priv", ""))
         self.socialfi_events = dict(d.get("socialfi_events", {}))
+        self.arb_arbitrators = dict(d.get("arb_arbitrators", {}))
+        self.arb_candidates = dict(d.get("arb_candidates", {}))
+        self.arb_cases = dict(d.get("arb_cases", {}))
+        self.arb_case_seq = int(d.get("arb_case_seq", 0))
+        self.arb_notifications = dict(d.get("arb_notifications", {}))
+        self.arb_notif_seq = int(d.get("arb_notif_seq", 0))
+        self.arb_events = list(d.get("arb_events", []))
+        self.arb_event_seq = int(d.get("arb_event_seq", 0))
+        self.arb_vrf_seed = d.get("arb_vrf_seed", "0x9a2b" + "0" * 62)
+        self.arb_banned = set(d.get("arb_banned", []))
+        self.arb_suspicious = dict(d.get("arb_suspicious", {}))
+        self.arb_malicious = dict(d.get("arb_malicious", {}))
+        self.arb_stake_pending = {k: list(v) for k, v in d.get("arb_stake_pending", {}).items()}
+        self.arb_pools = {k: float(v) for k, v in d.get("arb_pools", {}).items()}
+        self.arb_slashed = float(d.get("arb_slashed", 0.0))
         self.ai_creators = dict(d.get("ai_creators", {}))
         self.ai_daily_spend = dict(d.get("ai_daily_spend", {}))
 
