@@ -1,7 +1,7 @@
 
 # AI 创作者（链上数字生命体）规划与阶段 0 PoC
 
-> 状态：阶段 0 PoC 已落地（见 `scripts/ai_creator_demo.py` 与 `test_ai_creator.py`）
+> 状态：阶段 0 PoC ✅ + 阶段 2 Agent 运行时 v1 ✅（见 `agent/`、`scripts/agent_runtime_demo.py`、`test_agent_runtime.py`）
 
 ## 一、目标
 
@@ -34,7 +34,8 @@ Nova 链现有基础设施已覆盖约 70%：
 └──────────────────────────┘        └──────────────────────────┘
 ```
 
-阶段 0 只做「链上身份 + 预算约束 + 自动发布售卖」的最小闭环，Agent 运行时用演示脚本模拟。
+阶段 0 只做「链上身份 + 预算约束 + 自动发布售卖」的最小闭环；阶段 2 把演示脚本升级为
+独立 Agent 运行时（见 `agent/` 包与 `docs/AGENT_RUNTIME.md`）。
 
 ## 四、阶段 0 PoC（已实现）
 
@@ -51,13 +52,27 @@ Nova 链现有基础设施已覆盖约 70%：
 
 收益闭环复用现有文本合约：购买自动 90% 归 AI 钱包、10% 归生态基金。
 
+## 四之二、阶段 2 Agent 运行时 v1（已实现）
+
+链外运行时包 `agent/`，让 AI 创作者具备「数字生命体 2.0」的自主运转能力：
+
+- **感知器 `perception.py`**：扫描链上身份/预算/事件，产出信号（paused / budget_low / income / prompt / idle）。
+- **内容引擎 `engine.py`**：Mock 确定性模板引擎（无依赖、可复现审计）+ LLM（OpenAI 兼容，无密钥或失败自动回退 Mock）。
+- **决策循环 `planner.py`**：选题（注入 prompt 优先）→ 调引擎生成 → 成本估算（保证金 + gas）→ 预算/余额感知地输出动作。
+- **执行器 `executor.py`**：签名服务（托管私钥）+ 提交网关（进程内 `LocalNodeGateway` / 远程 `RpcGateway`）+ dry-run 预演。
+- **安全护栏 `guardrail.py`**：动作白名单、本地紧急暂停、预算/余额复核、动作冷却、每日次数上限。
+- **调度器 `runtime.py`**：`tick()` 单次生命周期 + `run_loop()` 持续运转；审计 JSONL、状态持久化、可选状态 HTTP 服务。
+
+自主度 L1：预算内自动创作售卖闭环（身份 → 感知 → 决策 → 生成 → 发布 → 分账 → 护栏 → 审计）。
+即使私钥泄露，链上日预算硬约束仍拒绝超预算交易（演示场景 7）。
+
 ## 五、分阶段路线图
 
 | 阶段 | 内容 | 状态 |
 |------|------|------|
 | 0 | 身份注册 + 日预算硬约束 + 自动发布/分账 PoC | ✅ 已实现 |
 | 1 | 链上核心完善：状态机扩展、事件订阅 RPC、前端联动 | 待启动 |
-| 2 | Agent 运行时：调度器/决策循环/内容引擎/签名服务/审计日志 | 待启动 |
+| 2 | Agent 运行时：调度器/决策循环/内容引擎/签名服务/审计日志 | ✅ 已实现（v1，L1 自主度） |
 | 3 | AI 协作：联合创作分账、AI 互持粉丝代币、算力委托 | 待启动 |
 | 4 | 自治与治理：社区冻结/清算、MPC 多签、模型 Key 托管 | 远期 |
 
@@ -81,5 +96,7 @@ Nova 链现有基础设施已覆盖约 70%：
 ## 八、交付物清单
 
 - 代码：`core/socialfi.py`（AI 身份段）、`core/storage.py`（状态字段）、`nova_node.py`（预算流水线 + RPC）、`network/rpc.py`（路由）
-- 演示：`scripts/ai_creator_demo.py`
-- 测试：`test_ai_creator.py`
+- 阶段 2 代码：`agent/`（perception/engine/planner/guardrail/executor/gateway/runtime）
+- 演示：`scripts/ai_creator_demo.py`（阶段 0）、`scripts/agent_runtime_demo.py`（阶段 2）
+- 测试：`test_ai_creator.py`、`test_agent_runtime.py`（全量 198 项）
+- 文档：`docs/AI_CREATOR_PLAN.md`、`docs/AGENT_RUNTIME.md`

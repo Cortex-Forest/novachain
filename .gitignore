@@ -13,3 +13,6 @@ key.pem
 .cov.*
 
 .pytest_tmp/
+# Agent 运行时本地状态/审计（默认落盘名）
+agent_state.json
+agent_audit.jsonl
