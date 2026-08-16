@@ -23,6 +23,8 @@ class ConsensusEngine:
 
     MAX_BLOCK_TXS = 2000
 
+    POS_SLASH_MISS_THRESHOLD = 3  # 连续错过出块窗口达到该次数才惩罚当选者（H-03：防补块恶意惩罚）
+
     def __init__(self, node, block_interval=60, mode="checkpoint", epoch_len=10800, proposer_timeout=None):
         self.node = node
         self.block_interval = block_interval
@@ -130,8 +132,13 @@ class ConsensusEngine:
                     return False
                 self.chain.append(block)
                 if elected is not None and block.proposer != elected:
-                    # 当选者超时未出块：惩罚当选者（确定性、随链一致）
-                    self._slash(elected, self.node.economy.INACTIVITY_SLASH_RATIO, "出块超时", block.height)
+                    # 回退补块：仅当当选者连续错过多个窗口才惩罚（H-03，防单次网络延迟被恶意补块罚没）
+                    missed = int(self.node.store.pos_missed.get(elected, 0)) + 1
+                    self.node.store.pos_missed[elected] = missed
+                    if missed >= self.POS_SLASH_MISS_THRESHOLD:
+                        self._slash(elected, self.node.economy.INACTIVITY_SLASH_RATIO,
+                                    "连续出块超时", block.height)
+                        self.node.store.pos_missed[elected] = 0
                 return True
             self.chain.append(block)
             return True
@@ -148,6 +155,7 @@ class ConsensusEngine:
         if elected is None:
             return True, None  # bootstrap：无质押时任意签名有效的验证者均可出块
         if block.proposer == elected:
+            self.node.store.pos_missed.pop(elected, None)  # 当选者正常出块，清零缺失计数
             return True, elected
         prev_ts = self.chain[-1].timestamp if self.chain else 0
         fallback = bool(self.chain) and (block.timestamp - prev_ts) >= self.proposer_timeout

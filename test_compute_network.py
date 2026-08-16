@@ -25,7 +25,7 @@ from core.compute import (ComputeMarket, TASK_TYPES, reference_price, spec_meets
                           gpu_tier, MIN_COMPUTE_STAKE, MAX_COMPUTE_STAKE,
                           MARKET_FEE_RATE, AUDIT_SLASH_MULT, COMPUTE_POOL)
 from core.ai_service import (AIService, AI_FUND, TRIGGER_FEE, REV_CREATOR,
-                             REV_COMPUTE, REV_FUND)
+                             REV_COMPUTE, REV_FUND, FUND_SINGLE_SPEND_LIMIT)
 from network.rpc import setup_routes
 from nova_node import NovaNode
 
@@ -605,6 +605,66 @@ def test_ai_trigger_and_fund_spend():
     # 非监护人不能支出
     assert not node.validate_tx(_signed_tx(miner, "nova:ai:fund:spend", amount=1.0,
                                            recipient=fan.address, purpose="x"))
+
+
+def test_ai_fund_large_spend_requires_two_guardians():
+    # H-04：大额支出（> 单笔上限）须双监护人审批，单监护人不能全量提走
+    node = _node()
+    human, ai, fan, bob, miner = QuantumWallet(), QuantumWallet(), QuantumWallet(), QuantumWallet(), QuantumWallet()
+    for w in (human, ai, fan, bob, miner):
+        _fund(node, w.address)
+    _apply(node, _signed_tx(ai, "nova:ai:register", name="Nova 音乐精灵",
+                            owner=human.address, daily_budget=100.0))
+    _apply(node, _signed_tx(ai, "nova:ai:fund:guard", addr=fan.address))
+    _apply(node, _signed_tx(ai, "nova:ai:fund:guard", addr=bob.address))
+    node.balances[AI_FUND] = 1000.0  # 基金余额充足
+    bal_fund = node.balances[AI_FUND]
+    big = FUND_SINGLE_SPEND_LIMIT + 30.0
+    # 大额支出：仅创建待审批，不立即转账
+    _apply(node, _signed_tx(fan, "nova:ai:fund:spend", amount=big,
+                            recipient=miner.address, purpose="购买更多算力"))
+    assert node.balances[AI_FUND] == pytest.approx(bal_fund)
+    pend = list(node.store.ai_fund_pending.values())[0]
+    assert pend["amount"] == big and pend["approvals"] == [fan.address]
+    # 非监护人不能审批；发起人不能重复审批
+    assert not node.validate_tx(_signed_tx(miner, "nova:ai:fund:approve", pid=pend["id"]))
+    assert not node.validate_tx(_signed_tx(fan, "nova:ai:fund:approve", pid=pend["id"]))
+    # 第二监护人审批 → 执行转账
+    _apply(node, _signed_tx(bob, "nova:ai:fund:approve", pid=pend["id"]))
+    assert node.balances[AI_FUND] == pytest.approx(bal_fund - big)
+    assert node.balances[miner.address] == pytest.approx(100000.0 + big)
+    assert pend["id"] not in node.store.ai_fund_pending
+    fv = node.ai_service.fund_view()
+    assert fv["expense_total"] == pytest.approx(big)
+    assert len(fv["pending"]) == 0
+
+
+def test_ai_fund_daily_cap_blocks_single_guardian_drain():
+    # H-04：小额支出受单监护人单日上限约束，无法一次性掏空基金
+    node = _node()
+    human, ai, fan, miner = QuantumWallet(), QuantumWallet(), QuantumWallet(), QuantumWallet()
+    for w in (human, ai, fan, miner):
+        _fund(node, w.address)
+    _apply(node, _signed_tx(ai, "nova:ai:register", name="Nova 音乐精灵",
+                            owner=human.address, daily_budget=100.0))
+    _apply(node, _signed_tx(ai, "nova:ai:fund:guard", addr=fan.address))
+    node.balances[AI_FUND] = 1000.0  # 基金余额充足
+    step = FUND_SINGLE_SPEND_LIMIT / 4
+    for _ in range(4):
+        _apply(node, _signed_tx(fan, "nova:ai:fund:spend", amount=step,
+                                recipient=miner.address, purpose="p"))
+    assert node.balances[AI_FUND] == pytest.approx(1000.0 - FUND_SINGLE_SPEND_LIMIT)
+    # 已到单日上限，再支出被拒
+    assert not node.validate_tx(_signed_tx(fan, "nova:ai:fund:spend", amount=step,
+                                           recipient=miner.address, purpose="p"))
+    # 非监护人不能支出
+    assert not node.validate_tx(_signed_tx(miner, "nova:ai:fund:spend", amount=step,
+                                           recipient=human.address, purpose="p"))
+    # 另一位监护人拥有独立单日额度，不受影响
+    _apply(node, _signed_tx(ai, "nova:ai:fund:guard", addr=miner.address))
+    _apply(node, _signed_tx(miner, "nova:ai:fund:spend", amount=step,
+                            recipient=human.address, purpose="p"))
+    assert node.balances[AI_FUND] == pytest.approx(1000.0 - FUND_SINGLE_SPEND_LIMIT - step)
 
 
 # ---------------------------------------------------------------------------

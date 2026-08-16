@@ -466,9 +466,10 @@ def test_pos_inactivity_slash():
     b0.signature = p0.sign(b0.hash)
     assert node_a.consensus.adopt_block(b0)
     assert node_b.consensus.adopt_block(b0)
-    # 其他质押者补块 → 该高度当选者被惩罚 1% 并禁用出块权
+    # 其他质押者补块 → 当选者连续错过多个窗口后（H-03）才被惩罚 1% 并禁用出块权
     elected1 = node_a.consensus.elect_proposer(1, b0.hash)
     fb = vb if elected1 == va.address else va
+    node_a.store.pos_missed[elected1] = 2  # 已连续错过 2 个窗口，本次回退达到阈值
     b1 = Block(height=1, txids=["t1"], prev_hash=b0.hash, proposer=fb.address,
                proposer_pubkey=fb.public_key_hex(), timestamp=time.time())
     b1.signature = fb.sign(b1.hash)

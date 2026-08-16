@@ -307,6 +307,15 @@ async def test_process_message_state_snapshot_applies():
     assert donor.consensus.chain_height() == 2
 
     node = _node()
+    # C-02：默认拒绝远程快照（防状态接管）
+    await node.process_message({"type": "state_snapshot", "snapshot": snap}, "donor")
+    assert node.consensus.chain_height() == 0
+    # 显式开启种子同步后，仍拒绝非种子节点
+    node.sync_from_seeds = True
+    await node.process_message({"type": "state_snapshot", "snapshot": snap}, "untrusted")
+    assert node.consensus.chain_height() == 0
+    # 仅接受显式配置的种子节点
+    node.seeds = ["donor"]
     await node.process_message({"type": "state_snapshot", "snapshot": snap}, "donor")
     assert node.consensus.chain_height() == 2
     assert node.consensus.latest_checkpoint() == donor.consensus.latest_checkpoint()

@@ -36,6 +36,7 @@ class StateStore:
         self.locked_balances: Dict[str, dict] = {}
         self.early_rewards_paid: Set[str] = set()
         self.jailed: Dict[str, float] = {}
+        self.pos_missed: Dict[str, int] = {}    # 连续错过出块窗口计数（防补块恶意惩罚，H-03）
         # 去中心化存储网络状态
         self.storage_providers: Dict[str, dict] = {}
         self.storage_claims: Dict[str, dict] = {}
@@ -73,6 +74,9 @@ class StateStore:
         self.ai_fund_ledger: Dict[str, dict] = {}
         self.ai_fund_seq: int = 0
         self.ai_fund_guardians: Set[str] = set()
+        self.ai_fund_spend_day: Dict[str, float] = {}   # 监护人单日支出统计（key: 日期|地址，H-04）
+        self.ai_fund_pending: Dict[str, dict] = {}     # 大额支出待审批（H-04）
+        self.ai_fund_pending_seq: int = 0
         # SocialFi: fan tokens / revenue / achievement / market / blindbox / curation / graph / bond / fraction
         self.fan_tokens: Dict[str, dict] = {}
         self.revenue_shares: Dict[str, dict] = {}
@@ -143,6 +147,7 @@ class StateStore:
             "locked_balances": self.locked_balances,
             "early_rewards_paid": sorted(self.early_rewards_paid),
             "jailed": self.jailed,
+            "pos_missed": self.pos_missed,
             "storage_providers": self.storage_providers,
             "storage_claims": self.storage_claims,
             "storage_seals": self.storage_seals,
@@ -175,6 +180,9 @@ class StateStore:
             "ai_fund_ledger": self.ai_fund_ledger,
             "ai_fund_seq": self.ai_fund_seq,
             "ai_fund_guardians": sorted(self.ai_fund_guardians),
+            "ai_fund_spend_day": self.ai_fund_spend_day,
+            "ai_fund_pending": self.ai_fund_pending,
+            "ai_fund_pending_seq": self.ai_fund_pending_seq,
             "fan_tokens": {k: {**v, "voted": {pk: sorted(pv) for pk, pv in v.get("voted", {}).items()}}
                              for k, v in self.fan_tokens.items()},
             "revenue_shares": self.revenue_shares,
@@ -241,6 +249,7 @@ class StateStore:
         self.locked_balances = dict(d.get("locked_balances", {}))
         self.early_rewards_paid = set(d.get("early_rewards_paid", []))
         self.jailed = {k: float(v) for k, v in d.get("jailed", {}).items()}
+        self.pos_missed = {k: int(v) for k, v in d.get("pos_missed", {}).items()}
         self.storage_providers = dict(d.get("storage_providers", {}))
         self.storage_claims = dict(d.get("storage_claims", {}))
         self.storage_seals = dict(d.get("storage_seals", {}))
@@ -273,6 +282,9 @@ class StateStore:
         self.ai_fund_ledger = dict(d.get("ai_fund_ledger", {}))
         self.ai_fund_seq = int(d.get("ai_fund_seq", 0))
         self.ai_fund_guardians = set(d.get("ai_fund_guardians", []))
+        self.ai_fund_spend_day = {k: float(v) for k, v in d.get("ai_fund_spend_day", {}).items()}
+        self.ai_fund_pending = dict(d.get("ai_fund_pending", {}))
+        self.ai_fund_pending_seq = int(d.get("ai_fund_pending_seq", 0))
         self.fan_tokens = {k: {**v, "voted": {pk: set(pv) for pk, pv in v.get("voted", {}).items()}}
                            for k, v in d.get("fan_tokens", {}).items()}
         self.revenue_shares = dict(d.get("revenue_shares", {}))

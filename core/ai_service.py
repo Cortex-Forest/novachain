@@ -30,6 +30,9 @@ REV_CREATOR = 0.70                    # 创作者 70%
 REV_COMPUTE = 0.20                    # 算力提供节点 20%
 REV_FUND = 0.10                       # AI 成长基金 10%
 TRIGGER_FEE = 2.0                     # 社区一键触发 AI 创作费用
+FUND_SINGLE_SPEND_LIMIT = 20.0       # 单监护人单笔/单日支出上限（H-04，超过须双监护人审批）
+FUND_APPROVALS_REQUIRED = 2        # 大额支出所需审批监护人数量
+FUND_PENDING_EXPIRE = 7 * 86400    # 待审批支出 7 天未达成自动作废
 AI_WORK_PRICE_MIN = 0.1
 AI_WORK_PRICE_MAX = 50.0
 SVC_NAME_MAX = 64
@@ -314,14 +317,70 @@ class AIService:
             return False, "金额无效"
         if self.store.balances.get(AI_FUND, 0.0) < amount:
             return False, "基金余额不足"
+        if amount <= FUND_SINGLE_SPEND_LIMIT:
+            # 小额支出受单监护人单日上限约束（H-04：单监护人不能全量提走）
+            day = time.strftime("%Y-%m-%d", time.localtime())
+            spent = float(self.store.ai_fund_spend_day.get(day + "|" + addr, 0.0))
+            if spent + float(amount) > FUND_SINGLE_SPEND_LIMIT:
+                return False, "超过单监护人单日支出上限（" + str(FUND_SINGLE_SPEND_LIMIT) + " NOVA）"
         return True, "ok"
 
     def fund_spend(self, addr, d, amount):
-        self.store.balances[AI_FUND] = self.store.balances.get(AI_FUND, 0.0) - float(amount)
-        self.store.balances[d["recipient"]] = self.store.balances.get(d["recipient"], 0.0) + float(amount)
-        self._fund_ledger("expense", "fund_spend", d["recipient"], addr, float(amount),
+        amount = float(amount)
+        if amount > FUND_SINGLE_SPEND_LIMIT:
+            # 大额支出：创建待审批记录（发起人视为第一票）
+            seq = self.store.ai_fund_pending_seq + 1
+            self.store.ai_fund_pending_seq = seq
+            pid = "spend_" + str(seq)
+            self.store.ai_fund_pending[pid] = {
+                "id": pid, "amount": round(amount, 8), "recipient": d["recipient"],
+                "purpose": d["purpose"], "by": addr, "approvals": [addr],
+                "created_at": time.time(),
+            }
+            self._fund_ledger("pending", "fund_spend_pending", pid, addr, amount,
+                              "大额基金支出待审批：" + d["purpose"])
+            return {"ok": True, "pending": pid, "amount": amount, "status": "pending"}
+        # 小额支出：即时转账 + 记录单日额度
+        self.store.balances[AI_FUND] = self.store.balances.get(AI_FUND, 0.0) - amount
+        self.store.balances[d["recipient"]] = self.store.balances.get(d["recipient"], 0.0) + amount
+        day = time.strftime("%Y-%m-%d", time.localtime())
+        key = day + "|" + addr
+        self.store.ai_fund_spend_day[key] = float(self.store.ai_fund_spend_day.get(key, 0.0)) + amount
+        self._fund_ledger("expense", "fund_spend", d["recipient"], addr, amount,
                           "基金支出：" + d["purpose"])
-        return {"ok": True, "recipient": d["recipient"], "amount": float(amount)}
+        return {"ok": True, "recipient": d["recipient"], "amount": amount}
+
+    def validate_fund_approve(self, d, addr) -> tuple:
+        pid = d.get("pid", "")
+        pend = self.store.ai_fund_pending.get(pid)
+        if not pend:
+            return False, "待审批支出不存在或已处理"
+        if addr not in (self.store.ai_fund_guardians or set()):
+            return False, "仅基金监护人可审批"
+        if addr in pend["approvals"]:
+            return False, "该监护人已审批"
+        if time.time() - float(pend.get("created_at", 0)) > FUND_PENDING_EXPIRE:
+            return False, "待审批支出已过期"
+        return True, "ok"
+
+    def fund_approve(self, addr, d):
+        pend = self.store.ai_fund_pending[d["pid"]]
+        pend["approvals"].append(addr)
+        self._fund_ledger("approval", "fund_approve", pend["id"], addr, 0.0,
+                          "审批大额支出：" + pend["purpose"])
+        if len(pend["approvals"]) < FUND_APPROVALS_REQUIRED:
+            return {"ok": True, "pending": pend["id"], "status": "waiting",
+                    "approvals": list(pend["approvals"])}
+        # 审批达成：执行转账
+        self.store.balances[AI_FUND] = self.store.balances.get(AI_FUND, 0.0) - float(pend["amount"])
+        self.store.balances[pend["recipient"]] = (
+            self.store.balances.get(pend["recipient"], 0.0) + float(pend["amount"]))
+        pid = pend["id"]
+        self._fund_ledger("expense", "fund_spend", pend["recipient"], pid, float(pend["amount"]),
+                          "基金支出（审批通过）：" + pend["purpose"])
+        del self.store.ai_fund_pending[pid]
+        return {"ok": True, "recipient": pend["recipient"], "amount": float(pend["amount"]),
+                "status": "executed"}
 
     def _fund_ledger(self, kind: str, event: str, ref: str, addr: str, amount: float, memo: str):
         seq = self.store.ai_fund_seq + 1
@@ -345,6 +404,10 @@ class AIService:
             "income_total": round(income, 8),
             "expense_total": round(expense, 8),
             "guardians": sorted(self.store.ai_fund_guardians or set()),
+            "single_spend_limit": FUND_SINGLE_SPEND_LIMIT,
+            "approvals_required": FUND_APPROVALS_REQUIRED,
+            "pending": sorted(self.store.ai_fund_pending.values(),
+                              key=lambda e: e.get("created_at", 0), reverse=True)[:20],
             "ledger": sorted(self.store.ai_fund_ledger.values(),
                              key=lambda e: e.get("at", 0), reverse=True)[:limit],
         }
@@ -367,6 +430,17 @@ class AIService:
                 due = True
             if m.get("last_run_day") != today and due:
                 m["due"] = True
+        # H-04：清理过期待审批与陈旧单日统计
+        today = time.strftime("%Y-%m-%d", time.localtime(now))
+        for k in list(self.store.ai_fund_spend_day):
+            if not k.startswith(today + "|"):
+                del self.store.ai_fund_spend_day[k]
+        for pid in list(self.store.ai_fund_pending):
+            p = self.store.ai_fund_pending[pid]
+            if now - float(p.get("created_at", 0)) > FUND_PENDING_EXPIRE:
+                self._fund_ledger("expired", "fund_spend_expired", pid, p.get("by", ""),
+                                  float(p.get("amount", 0.0)), "待审批支出已过期作废")
+                del self.store.ai_fund_pending[pid]
         return self.store.ai_muso
 
     def overview(self) -> dict:

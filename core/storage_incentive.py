@@ -113,6 +113,7 @@ class StorageIncentive:
             "last_heartbeat": now,
             "online": True,
             "fail_count": 0,
+            "fail_epoch": 0,
             "success_count": 0,
             "last_proof_epoch": 0,
             "last_proof_at": 0.0,
@@ -287,13 +288,13 @@ class StorageIncentive:
             except ValueError:
                 bad.append(cid)
                 continue
-            if len(frag) < FRAGMENT_SIZE and len(frag) != f.get("fragment_size_actual", 0):
-                pass
             if hashlib.sha256(frag).hexdigest() != f["fragment_commit"]:
                 bad.append(cid)
         if bad:
-            # 失败尝试计入连续失败次数（连续 3 次触发罚没）
-            node["fail_count"] = node.get("fail_count", 0) + 1
+            # 失败尝试计入连续失败次数（当日只计一次，连续 3 次触发罚没）
+            if node.get("fail_epoch") != day:
+                node["fail_count"] = node.get("fail_count", 0) + 1
+                node["fail_epoch"] = day
             node["last_proof_at"] = time.time()
             self._emit("node_proof_fail", addr, "", "",
                        f"存储证明片段校验失败（{len(bad)} 个文件）：{bad}")
@@ -302,6 +303,7 @@ class StorageIncentive:
         node["last_proof_at"] = time.time()
         node["last_heartbeat"] = time.time()
         node["online"] = True
+        node["fail_epoch"] = 0
         node["challenge_seq"] = node.get("challenge_seq", 0) + 1
         return {"ok": True, "reason": "ok", "assigned_gb": node.get("assigned_gb", 0.0)}
 
@@ -366,6 +368,7 @@ class StorageIncentive:
                 node["month_revenue"] = 0.0
             if node.get("last_proof_epoch") == day:
                 node["fail_count"] = 0
+                node["fail_epoch"] = 0
                 node["success_count"] = node.get("success_count", 0) + 1
                 reward = self.daily_reward(node)
                 if reward > 0 and self.store.balances.get(eco, 0) >= reward:
@@ -379,7 +382,10 @@ class StorageIncentive:
                     self._emit("node_reward", addr, "", "",
                                f"当日存储奖励 +{reward} NOVA")
             else:
-                node["fail_count"] = node.get("fail_count", 0) + 1
+                # 当日已因失败尝试计数过则不再重复累计（失败按“天”计）
+                if node.get("fail_epoch") != day:
+                    node["fail_count"] = node.get("fail_count", 0) + 1
+                node["fail_epoch"] = day
                 if node["fail_count"] >= SLASH_AFTER_FAILURES:
                     slashed = self._slash(addr)
                     result["slashed"] = round(result["slashed"] + slashed, 8)

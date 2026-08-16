@@ -235,6 +235,49 @@ def test_pos_adopt_rejects_unstaked_fallback():
     assert node.consensus.adopt_block(b1) is False  # 无质押者不能回退补块
 
 
+def test_pos_fallback_single_miss_does_not_slash():
+    # H-03：单次回退补块不立即惩罚当选者（防恶意补块罚没网络延迟节点）
+    va = QuantumWallet()
+    vb = QuantumWallet()
+    node = _pos_node(va.private_key_hex(), block_interval=10, proposer_timeout=20)
+    node.store.stakes[va.address] = 100
+    node.store.stakes[vb.address] = 100
+    node.consensus._refresh_epoch_stakes()
+    elected0 = node.consensus.elect_proposer(0, Block.GENESIS_PREV)
+    b0 = _signed_block(node, va if elected0 == va.address else vb, 0, ["t0"])
+    assert node.consensus.adopt_block(b0) is True
+    elected1 = node.consensus.elect_proposer(1, b0.hash)
+    fb = vb if elected1 == va.address else va
+    b1 = _signed_block(node, fb, 1, ["t1"], prev_hash=b0.hash, timestamp=b0.timestamp + 100)
+    assert node.consensus.adopt_block(b1) is True
+    assert node.consensus.chain_height() == 2
+    # 当选者质押未被扣减，仅记录 1 次缺失
+    assert node.store.stakes.get(elected1, 0) == 100
+    assert node.store.pos_missed.get(elected1, 0) == 1
+    assert elected1 not in node.store.jailed
+
+
+def test_pos_fallback_slashes_after_consecutive_misses():
+    # H-03：连续错过多个窗口才惩罚当选者（确定性、随链一致）
+    va = QuantumWallet()
+    vb = QuantumWallet()
+    node = _pos_node(va.private_key_hex(), block_interval=10, proposer_timeout=20)
+    node.store.stakes[va.address] = 100
+    node.store.stakes[vb.address] = 100
+    node.consensus._refresh_epoch_stakes()
+    elected0 = node.consensus.elect_proposer(0, Block.GENESIS_PREV)
+    b0 = _signed_block(node, va if elected0 == va.address else vb, 0, ["t0"])
+    assert node.consensus.adopt_block(b0) is True
+    elected1 = node.consensus.elect_proposer(1, b0.hash)
+    node.store.pos_missed[elected1] = 2  # 已连续错过 2 次
+    fb = vb if elected1 == va.address else va
+    b1 = _signed_block(node, fb, 1, ["t1"], prev_hash=b0.hash, timestamp=b0.timestamp + 100)
+    assert node.consensus.adopt_block(b1) is True
+    assert node.store.stakes.get(elected1, 0) < 100  # 达到阈值 → 罚没 1%
+    assert node.store.pos_missed.get(elected1, 0) == 0  # 计数清零
+    assert node.store.jailed.get(elected1, 0) > 1
+
+
 def test_slash_zero_stake_is_noop():
     node = _pos_node(QuantumWallet().private_key_hex())
     node.consensus._slash("0xghost", 0.01, "test", 1)

@@ -86,6 +86,9 @@ python scripts/ai_musician_loop.py --suno-url https://... --suno-key <key> --ipf
 - 收入：每笔作品销售 10% + 社区一键触发费用（2 NOVA / 次）。
 - 支出：仅基金监护人（`nova:ai:fund:guard` 授权，AI 创作者可追加监护人）可执行
   `nova:ai:fund:spend`，需填写收款地址与用途（购买更多算力 / 训练更好模型）。
+- 支出限额（H-04，防单监护人掏空）：单笔 ≤20 NOVA 的小额支出即时转账，但受单监护人
+  单日 20 NOVA 上限约束；单笔 >20 NOVA 的大额支出进入待审批（`nova:ai:fund:approve`），
+  需 **2 名监护人** 审批后才执行，7 天未达成自动作废（`maintain` 清理）。
 - 台账：`ai_fund_ledger` 记录每笔收支（kind / event / ref / addr / amount / memo / at），
   前端「成长基金」面板展示余额、累计收支、监护人列表与流水。
 
@@ -114,7 +117,7 @@ python scripts/ai_musician_loop.py --suno-url https://... --suno-key <key> --ipf
 | `nova:ai:muso:config` | 音乐人循环配置（仅 AI 创作者） |
 | `nova:ai:work:create` / `nova:ai:work:buy` | 作品上架（自动定价）/ 购买分账 |
 | `nova:ai:trigger` | 社区一键触发（2 NOVA → 基金） |
-| `nova:ai:fund:guard` / `nova:ai:fund:spend` | 基金监护人授权 / 基金支出 |
+| `nova:ai:fund:guard` / `nova:ai:fund:spend` / `nova:ai:fund:approve` | 监护人授权 / 支出（小额即时、大额待审批）/ 审批大额支出 |
 
 ## 八、前端展示（novachain-web / ai_musician.html）
 

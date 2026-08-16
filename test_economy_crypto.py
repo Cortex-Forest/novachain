@@ -391,7 +391,9 @@ def test_release_early_rewards_skips_when_fund_low(monkeypatch):
 def test_validate_tx_mint_from_zero_address():
     node = _node()
     tx = Tx("0x0000", "0xabc", 100, [], "mint")
-    assert node.validate_tx(tx) is True  # 系统铸币交易短路
+    # C-01：0x0000 系统铸币仅限内部路径（allow_system），外部提交默认拒绝
+    assert node.validate_tx(tx) is False
+    assert node.validate_tx(tx, allow_system=True) is True
 
 
 def test_validate_tx_zero_amount_to_contract():

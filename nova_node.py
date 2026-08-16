@@ -32,11 +32,14 @@ from network.security import SecurityManager
 class NovaNode:
     def __init__(self, host="0.0.0.0", p2p=9000, rpc=8080, seeds=None, genesis="genesis.json",
                  cert_file="cert.pem", key_file="key.pem", use_tls=True, state_file="chain_state.json",
-                 block_interval=60, consensus_mode="checkpoint", validator_key=None, epoch_len=10800):
+                 block_interval=60, consensus_mode="checkpoint", validator_key=None, epoch_len=10800,
+                 sync_from_seeds=False):
         self.host, self.p2p_port, self.rpc_port = host, p2p, rpc
         self.node_id = f"{host}:{p2p}"
         self.peers: Set[str] = set()
         self.seeds = seeds or []
+        # 状态快照同步开关：默认关闭，仅显式开启时才接受种子节点的快照（防状态接管，C-02）
+        self.sync_from_seeds = sync_from_seeds
 
         self.state_file = state_file
         self.store = StateStore(genesis)
@@ -67,10 +70,13 @@ class NovaNode:
     def contracts(self): return self.store.contracts
 
     # ---------- 交易处理 ----------
-    def validate_tx(self, tx: Tx) -> bool:
+    def validate_tx(self, tx: Tx, allow_system: bool = False) -> bool:
         if self.security.is_replay(tx.txid): return False
         if not self.security.validate_size(tx.to_dict()): return False
-        if tx.sender == "0x0000": return True
+        if tx.sender == "0x0000":
+            # 0x0000 是系统铸造账户，仅允许节点内部路径（如 rpc_deploy）放行；
+            # 外部提交必须走完整签名+余额校验，防止任意代币铸造（C-01）。
+            return allow_system
         if not isinstance(tx.amount, (int, float)) or isinstance(tx.amount, bool): return False
         if not math.isfinite(tx.amount): return False
         if tx.amount < 0 or tx.amount > self.economy.TOTAL_SUPPLY: return False
@@ -139,7 +145,7 @@ class NovaNode:
                    "nova:compute:audit")
     AI_OPS = ("nova:ai:svc:register", "nova:ai:svc:config", "nova:ai:muso:config",
               "nova:ai:work:create", "nova:ai:work:buy", "nova:ai:trigger",
-              "nova:ai:fund:guard", "nova:ai:fund:spend")
+              "nova:ai:fund:guard", "nova:ai:fund:spend", "nova:ai:fund:approve")
     SOCIALFI_OPS = tuple(SocialFi.OPS)
     ARB_OPS = tuple(Arbitration.OPS)
 
@@ -388,6 +394,8 @@ class NovaNode:
             return tx.amount == 0 and self.ai_service.validate_fund_guard(d, addr)[0]
         if op == "nova:ai:fund:spend":
             return self.ai_service.validate_fund_spend(d, addr, tx.amount)[0]
+        if op == "nova:ai:fund:approve":
+            return tx.amount == 0 and self.ai_service.validate_fund_approve(d, addr)[0]
         return False
 
     def _apply_storage_op(self, tx):
@@ -578,6 +586,8 @@ class NovaNode:
             self.ai_service.fund_guard(addr, d)
         elif op == "nova:ai:fund:spend":
             self.ai_service.fund_spend(addr, d, tx.amount)
+        elif op == "nova:ai:fund:approve":
+            self.ai_service.fund_approve(addr, d)
 
     def _apply_arb_op(self, tx):
         """仲裁合约操作：金额随交易上链（质押/保证金），合约内部完成锁定与释放。"""
@@ -725,8 +735,8 @@ class NovaNode:
                     self.store.referral_claimed.add(tx.receiver)
                     self.store.referral_issued += 1
 
-    async def broadcast_tx(self, tx: Tx):
-        if self.validate_tx(tx):
+    async def broadcast_tx(self, tx: Tx, system: bool = False):
+        if self.validate_tx(tx, allow_system=system):
             self.security.mark_processed(tx.txid)
             self.store.dag.add(tx.txid)
             self.apply_tx(tx)
@@ -760,6 +770,9 @@ class NovaNode:
                 writer.write(json.dumps({"type": "state_snapshot", "snapshot": self.full_snapshot()}).encode() + b"\n")
                 await writer.drain()
         elif mtype == "state_snapshot":
+            # 快照接管防护（C-02）：默认拒绝远程快照；显式开启时仅接受种子节点。
+            if not self.sync_from_seeds or peer not in self.seeds:
+                return
             snap = msg.get("snapshot", {})
             peer_chain = snap.get("consensus", {}).get("chain", [])
             if len(peer_chain) >= self.consensus.chain_height() and self.apply_snapshot(snap):
@@ -957,7 +970,7 @@ class NovaNode:
                 self.balances[self.economy.ECOSYSTEM_FUND] -= rwd
                 self.balances[creator] = self.balances.get(creator, 0) + rwd
                 self.store.deploy_count += 1
-        await self.broadcast_tx(tx)
+        await self.broadcast_tx(tx, system=True)
         return web.json_response({"contract":addr,"txid":tx.txid,"reward":rwd})
 
     async def rpc_call(self, req):
@@ -2001,13 +2014,14 @@ if __name__ == "__main__":
     p.add_argument("--consensus", choices=["pos", "checkpoint"], default="checkpoint", help="共识模式（pos=质押加权出块+签名验证）")
     p.add_argument("--validator-key", default="", help="PoS 验证者私钥（hex seed，32 字节），pos 模式下用于出块签名")
     p.add_argument("--epoch-len", type=int, default=10800, help="PoS epoch 块数（默认 10800 ≈ 7.5 天）")
+    p.add_argument("--sync-from-seeds", action="store_true", help="接受种子节点状态快照同步（默认关闭，防状态接管）")
     a = p.parse_args()
     node = NovaNode(host=a.host, p2p=a.p2p, rpc=a.rpc,
                     seeds=[a.seed] if a.seed else [],
                     genesis=a.genesis,
                     cert_file=a.cert, key_file=a.key, use_tls=not a.no_tls, state_file=a.state,
                     consensus_mode=a.consensus, validator_key=a.validator_key or None,
-                    epoch_len=a.epoch_len)
+                    epoch_len=a.epoch_len, sync_from_seeds=a.sync_from_seeds)
     asyncio.run(node.start())
 
 

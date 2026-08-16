@@ -182,6 +182,12 @@ def test_inc_wrong_fragment_counts_failure():
                             files=ch["files"], fragments=[wrong.hex()]))
     assert node.store.inc_nodes[n1.address]["fail_count"] == 1
     assert node.store.inc_nodes[n1.address]["last_proof_epoch"] != day
+    # 同一周期内多次失败尝试只计一次；结算也不再重复累计
+    _apply(node, _signed_tx(n1, "nova:storage:inc:prove", day=day,
+                            files=ch["files"], fragments=[wrong.hex()]))
+    assert node.store.inc_nodes[n1.address]["fail_count"] == 1
+    node.storage_incentive.settle_epoch(day)
+    assert node.store.inc_nodes[n1.address]["fail_count"] == 1
 
 
 def test_inc_slash_after_three_failures():
