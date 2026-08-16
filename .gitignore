@@ -17,3 +17,13 @@ key.pem
 agent_state.json
 agent_audit.jsonl
 .ai_muso_store/
+
+# 开发临时产物（SDK 联调 / 测试）
+.pytest_tmp2/
+.pytest-tmp/
+_node_out.log
+_node_err.log
+_sdk_err.log
+scripts/_patch_faucet.py
+scripts/_faucet_smoke.py
+scripts/_check_js.py

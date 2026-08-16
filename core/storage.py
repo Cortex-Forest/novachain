@@ -116,6 +116,63 @@ class StateStore:
         self.arb_slashed: float = 0.0                  # 累计罚没（进入生态基金）
 
         self._load_genesis(genesis_file)
+        # 预言机：VRF 随机数 / 多源价格聚合 / AI 生成结果验证
+        self.oracle_nodes: Dict[str, dict] = {}          # 预言机节点（质押 500 NOVA / 公钥 / 状态）
+        self.oracle_requests: Dict[str, dict] = {}       # VRF 随机数请求（request_id -> 结果）
+        self.oracle_request_seq: int = 0
+        self.oracle_price_sources: Dict[str, dict] = {}  # 各数据源上报的价格（feed -> source -> price）
+        self.oracle_feeds: Dict[str, dict] = {}          # 聚合后的价格（feed -> {price, ts, sources}）
+        self.oracle_ai_verifications: Dict[str, dict] = {}  # AI 生成结果哈希验证
+        self.oracle_events: Dict[str, dict] = {}
+        self.oracle_event_seq: int = 0
+        self.oracle_slashed: float = 0.0                 # 累计罚没（进入生态基金）
+        # 跨链桥：节点多签 / 包装资产 / 存款铸造 / 销毁释放 / 额度与延迟
+        self.bridge_nodes: Dict[str, dict] = {}          # 桥节点（质押 1000 NOVA / 多签权重 1）
+        self.bridge_assets: Dict[str, dict] = {}         # 包装资产（nUSDT/nETH...）
+        self.bridge_deposits: Dict[str, dict] = {}       # 跨入事件（源链证明 -> 铸造）
+        self.bridge_deposit_seq: int = 0
+        self.bridge_withdrawals: Dict[str, dict] = {}    # 跨出事件（销毁 -> 节点签名 -> 释放确认）
+        self.bridge_withdrawal_seq: int = 0
+        self.bridge_daily_usage: Dict[str, float] = {}   # 每日跨链额度使用（key: 日期）
+        self.bridge_fee_pool: float = 0.0                # 手续费回流验证者激励池
+        self.bridge_events: Dict[str, dict] = {}
+        self.bridge_event_seq: int = 0
+        self.bridge_slashed: float = 0.0
+        # DEX：AMM 交易对 / LP 持仓 / 流动性挖矿
+        self.dex_pairs: Dict[str, dict] = {}             # 交易对（reserve0/reserve1/fee）
+        self.dex_lp: Dict[str, dict] = {}                # LP 持仓（pair -> holder -> {shares,...}）
+        self.dex_farm: Dict[str, dict] = {}              # 挖矿（pair -> pool 参数 + 用户质押）
+        self.dex_events: Dict[str, dict] = {}
+        self.dex_event_seq: int = 0
+        self.dex_paused: bool = False
+        # 链上治理：提案 / 投票 / 委托 / 时间锁
+        self.gov_proposals: Dict[str, dict] = {}
+        self.gov_proposal_seq: int = 0
+        self.gov_delegations: Dict[str, str] = {}        # 委托关系（from -> to）
+        self.gov_endorsements: Dict[str, list] = {}      # 社区联署（proposal_id -> [addr]）
+        self.gov_timelock: Dict[str, dict] = {}          # 待执行（时间锁 48h）
+        self.gov_events: Dict[str, dict] = {}
+        self.gov_params: Dict[str, object] = {}          # 治理调整后的参数覆盖（模块读取）
+        self.gov_event_seq: int = 0
+        # DID 与声誉：身份绑定（只存哈希）/ 创作者认证 / 声誉分
+        self.did_profiles: Dict[str, dict] = {}          # DID 档案（哈希绑定 + 可见性）
+        self.did_applications: Dict[str, dict] = {}      # 创作者认证申请
+        self.did_application_seq: int = 0
+        self.did_badges: Dict[str, list] = {}            # 认证徽章（address -> badge id 列表）
+        self.did_reputation: Dict[str, dict] = {}        # 声誉分详情（详情仅本人可见，总分公开）
+        self.did_events: Dict[str, dict] = {}
+        self.did_event_seq: int = 0
+        # 创作者订阅与会员：档位 / 订阅 / 自动续费
+        self.sub_creators: Dict[str, dict] = {}          # 创作者订阅档位
+        self.sub_subscriptions: Dict[str, dict] = {}     # 订阅关系（key: user|creator）
+        self.sub_events: Dict[str, dict] = {}
+        self.sub_event_seq: int = 0
+        # 测试网水龙头：领取记录 / 每日统计 / 发放回执
+        self.faucet_claims: Dict[str, dict] = {}   # addr -> {last_ts, total, count, ip}
+        self.faucet_daily: Dict[str, dict] = {}    # date -> {count, amount, ips}
+        self.faucet_receipts: Dict[str, dict] = {} # receipt_id -> 发放记录
+        self.faucet_seq: int = 0
+
     def to_dict(self):
         return {
             "balances": self.balances,
@@ -215,6 +272,55 @@ class StateStore:
             "arb_stake_pending": self.arb_stake_pending,
             "arb_pools": self.arb_pools,
             "arb_slashed": self.arb_slashed,
+            "oracle_nodes": self.oracle_nodes,
+            "oracle_requests": self.oracle_requests,
+            "oracle_request_seq": self.oracle_request_seq,
+            "oracle_price_sources": self.oracle_price_sources,
+            "oracle_feeds": self.oracle_feeds,
+            "oracle_ai_verifications": self.oracle_ai_verifications,
+            "oracle_events": self.oracle_events,
+            "oracle_event_seq": self.oracle_event_seq,
+            "oracle_slashed": self.oracle_slashed,
+            "bridge_nodes": self.bridge_nodes,
+            "bridge_assets": self.bridge_assets,
+            "bridge_deposits": self.bridge_deposits,
+            "bridge_deposit_seq": self.bridge_deposit_seq,
+            "bridge_withdrawals": self.bridge_withdrawals,
+            "bridge_withdrawal_seq": self.bridge_withdrawal_seq,
+            "bridge_daily_usage": self.bridge_daily_usage,
+            "bridge_fee_pool": self.bridge_fee_pool,
+            "bridge_events": self.bridge_events,
+            "bridge_event_seq": self.bridge_event_seq,
+            "bridge_slashed": self.bridge_slashed,
+            "dex_pairs": self.dex_pairs,
+            "dex_lp": self.dex_lp,
+            "dex_farm": self.dex_farm,
+            "dex_events": self.dex_events,
+            "dex_event_seq": self.dex_event_seq,
+            "dex_paused": self.dex_paused,
+            "gov_proposals": self.gov_proposals,
+            "gov_proposal_seq": self.gov_proposal_seq,
+            "gov_delegations": self.gov_delegations,
+            "gov_endorsements": self.gov_endorsements,
+            "gov_timelock": self.gov_timelock,
+            "gov_events": self.gov_events,
+            "gov_params": self.gov_params,
+            "gov_event_seq": self.gov_event_seq,
+            "did_profiles": self.did_profiles,
+            "did_applications": self.did_applications,
+            "did_application_seq": self.did_application_seq,
+            "did_badges": self.did_badges,
+            "did_reputation": self.did_reputation,
+            "did_events": self.did_events,
+            "did_event_seq": self.did_event_seq,
+            "sub_creators": self.sub_creators,
+            "sub_subscriptions": self.sub_subscriptions,
+            "sub_events": self.sub_events,
+            "sub_event_seq": self.sub_event_seq,
+            "faucet_claims": self.faucet_claims,
+            "faucet_daily": self.faucet_daily,
+            "faucet_receipts": self.faucet_receipts,
+            "faucet_seq": self.faucet_seq,
             "ai_creators": self.ai_creators,
             "ai_daily_spend": self.ai_daily_spend,
         }
@@ -319,6 +425,55 @@ class StateStore:
         self.arb_slashed = float(d.get("arb_slashed", 0.0))
         self.ai_creators = dict(d.get("ai_creators", {}))
         self.ai_daily_spend = dict(d.get("ai_daily_spend", {}))
+        self.oracle_nodes = dict(d.get("oracle_nodes", {}))
+        self.oracle_requests = dict(d.get("oracle_requests", {}))
+        self.oracle_request_seq = int(d.get("oracle_request_seq", 0))
+        self.oracle_price_sources = dict(d.get("oracle_price_sources", {}))
+        self.oracle_feeds = dict(d.get("oracle_feeds", {}))
+        self.oracle_ai_verifications = dict(d.get("oracle_ai_verifications", {}))
+        self.oracle_events = dict(d.get("oracle_events", {}))
+        self.oracle_event_seq = int(d.get("oracle_event_seq", 0))
+        self.oracle_slashed = float(d.get("oracle_slashed", 0.0))
+        self.bridge_nodes = dict(d.get("bridge_nodes", {}))
+        self.bridge_assets = dict(d.get("bridge_assets", {}))
+        self.bridge_deposits = dict(d.get("bridge_deposits", {}))
+        self.bridge_deposit_seq = int(d.get("bridge_deposit_seq", 0))
+        self.bridge_withdrawals = dict(d.get("bridge_withdrawals", {}))
+        self.bridge_withdrawal_seq = int(d.get("bridge_withdrawal_seq", 0))
+        self.bridge_daily_usage = {k: float(v) for k, v in d.get("bridge_daily_usage", {}).items()}
+        self.bridge_fee_pool = float(d.get("bridge_fee_pool", 0.0))
+        self.bridge_events = dict(d.get("bridge_events", {}))
+        self.bridge_event_seq = int(d.get("bridge_event_seq", 0))
+        self.bridge_slashed = float(d.get("bridge_slashed", 0.0))
+        self.dex_pairs = dict(d.get("dex_pairs", {}))
+        self.dex_lp = dict(d.get("dex_lp", {}))
+        self.dex_farm = dict(d.get("dex_farm", {}))
+        self.dex_events = dict(d.get("dex_events", {}))
+        self.dex_event_seq = int(d.get("dex_event_seq", 0))
+        self.dex_paused = bool(d.get("dex_paused", False))
+        self.gov_proposals = dict(d.get("gov_proposals", {}))
+        self.gov_proposal_seq = int(d.get("gov_proposal_seq", 0))
+        self.gov_delegations = dict(d.get("gov_delegations", {}))
+        self.gov_endorsements = {k: list(v) for k, v in d.get("gov_endorsements", {}).items()}
+        self.gov_timelock = dict(d.get("gov_timelock", {}))
+        self.gov_events = dict(d.get("gov_events", {}))
+        self.gov_params = dict(d.get("gov_params", {}))
+        self.gov_event_seq = int(d.get("gov_event_seq", 0))
+        self.did_profiles = dict(d.get("did_profiles", {}))
+        self.did_applications = dict(d.get("did_applications", {}))
+        self.did_application_seq = int(d.get("did_application_seq", 0))
+        self.did_badges = {k: list(v) for k, v in d.get("did_badges", {}).items()}
+        self.did_reputation = dict(d.get("did_reputation", {}))
+        self.did_events = dict(d.get("did_events", {}))
+        self.did_event_seq = int(d.get("did_event_seq", 0))
+        self.sub_creators = dict(d.get("sub_creators", {}))
+        self.sub_subscriptions = dict(d.get("sub_subscriptions", {}))
+        self.sub_events = dict(d.get("sub_events", {}))
+        self.sub_event_seq = int(d.get("sub_event_seq", 0))
+        self.faucet_claims = {k: dict(v) for k, v in d.get("faucet_claims", {}).items()}
+        self.faucet_daily = {k: dict(v) for k, v in d.get("faucet_daily", {}).items()}
+        self.faucet_receipts = dict(d.get("faucet_receipts", {}))
+        self.faucet_seq = int(d.get("faucet_seq", 0))
 
 
     def save(self, path):
@@ -348,3 +503,5 @@ class StateStore:
                     print(f"[WARNING] 检测到占位地址 {ph}")
         except Exception as e:
             print(f"[GENESIS] 未找到创世文件: {e}")
+
+

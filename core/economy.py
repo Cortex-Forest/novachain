@@ -32,6 +32,14 @@ class Economy:
     ECOSYSTEM_FUND = "0x_ecosystem_fund"
     COMMUNITY_AIRDROP = "0x_community_airdrop"
 
+    # 测试网水龙头：免费领取测试 NOVA（仅测试网模式启用，主网禁用）
+    FAUCET_POOL = "0x_faucet_pool"            # 水龙头资金池地址
+    FAUCET_AMOUNT = 100.0                     # 每次领取 100 NOVA 测试币
+    FAUCET_COOLDOWN = 86400                   # 同一地址每 24 小时限领 1 次
+    FAUCET_DAILY_IP_CAP = 2                   # 同一 IP 每日最多领取 2 次
+    FAUCET_DAILY_CAP = 20000.0                # 每日全网发放上限（测试币）
+    FAUCET_INITIAL_POOL = 1000000.0           # 测试网启动时一次性铸造的水龙头池
+
     # 算力网络经济模型（提示词 5）：激励池与存储共池，按贡献比例分配
     AI_GROWTH_FUND = "0x_ai_growth_fund"      # AI 成长基金地址（合约控制）
     COMPUTE_INCENTIVE_WEIGHT = 0.6            # 算力贡献权重 60%

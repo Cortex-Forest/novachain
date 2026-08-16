@@ -25,15 +25,25 @@ from core.compute import (ComputeMarket, RESULT_HASH_RE, MAX_WORKERS, MAX_SPEC_L
 from core.ai_service import AIService, AI_FUND, TRIGGER_FEE
 from core.socialfi import SocialFi, TEXT_ESCROW
 from core.arbitration import Arbitration, ARB_STAKE, ARB_COMPLAINT_DEPOSIT
+from core.oracle import Oracle
+from core.bridge import Bridge
+from core.dex import Dex
+from core.governance import Governance
+from core.did import DID
+from core.subscription import Subscription
 from network.p2p import P2PNetwork
 from network.rpc import setup_routes
 from network.security import SecurityManager
+
+def _amt(v):
+    return round(float(v), 8)
+
 
 class NovaNode:
     def __init__(self, host="0.0.0.0", p2p=9000, rpc=8080, seeds=None, genesis="genesis.json",
                  cert_file="cert.pem", key_file="key.pem", use_tls=True, state_file="chain_state.json",
                  block_interval=60, consensus_mode="checkpoint", validator_key=None, epoch_len=10800,
-                 sync_from_seeds=False):
+                 sync_from_seeds=False, faucet=False):
         self.host, self.p2p_port, self.rpc_port = host, p2p, rpc
         self.node_id = f"{host}:{p2p}"
         self.peers: Set[str] = set()
@@ -50,6 +60,12 @@ class NovaNode:
         self.socialfi = SocialFi(self.store, self.economy, self.storage_net)
         self.arbitration = Arbitration(self.store, self.economy, self.socialfi)
         self.ai_service = AIService(self.store, self.economy, self.compute_market, self.socialfi)
+        self.oracle = Oracle(self.store, self.economy)
+        self.bridge = Bridge(self.store, self.economy, self.oracle)
+        self.dex = Dex(self.store, self.economy, self.bridge)
+        self.governance = Governance(self.store, self.economy, self.bridge, self.dex)
+        self.did = DID(self.store, self.economy)
+        self.subscription = Subscription(self.store, self.economy)
         self.security = SecurityManager()
         self.chat = ChatStore()
         if state_file:
@@ -60,6 +76,11 @@ class NovaNode:
                                          mode=consensus_mode, epoch_len=epoch_len)
         if state_file and os.path.exists(state_file):
             self._load_state()
+        self.faucet_enabled = faucet
+        if faucet:
+            self._bootstrap_faucet()
+        # DEX 初始流动性：预售资金提供（幂等，所有节点确定性执行）
+        self.dex.bootstrap()
         self.p2p = P2PNetwork(self, host, p2p, use_tls, cert_file, key_file)
 
     @property
@@ -122,6 +143,24 @@ class NovaNode:
         elif self._is_arb_op(tx):
             if not self._validate_arb_op(tx):
                 return False
+        elif self._is_oracle_op(tx):
+            if not self._validate_oracle_op(tx):
+                return False
+        elif self._is_bridge_op(tx):
+            if not self._validate_bridge_op(tx):
+                return False
+        elif self._is_dex_op(tx):
+            if not self._validate_dex_op(tx):
+                return False
+        elif self._is_gov_op(tx):
+            if not self._validate_gov_op(tx):
+                return False
+        elif self._is_did_op(tx):
+            if not self._validate_did_op(tx):
+                return False
+        elif self._is_sub_op(tx):
+            if not self._validate_sub_op(tx):
+                return False
         elif tx.amount == 0 and tx.receiver not in self.contracts:
             return False
         if not isinstance(tx.timestamp, (int, float)) or abs(time.time() - tx.timestamp) > 300: return False
@@ -148,6 +187,12 @@ class NovaNode:
               "nova:ai:fund:guard", "nova:ai:fund:spend", "nova:ai:fund:approve")
     SOCIALFI_OPS = tuple(SocialFi.OPS)
     ARB_OPS = tuple(Arbitration.OPS)
+    ORACLE_OPS = tuple(Oracle.OPS)
+    BRIDGE_OPS = tuple(Bridge.OPS)
+    DEX_OPS = tuple(Dex.OPS)
+    GOV_OPS = tuple(Governance.OPS)
+    DID_OPS = tuple(DID.OPS)
+    SUB_OPS = tuple(Subscription.OPS)
 
     def _is_storage_op(self, tx):
         if tx.sender != tx.receiver:
@@ -185,11 +230,65 @@ class NovaNode:
         d = self._parse_op_data(tx)
         return isinstance(d, dict) and d.get("op") in self.ARB_OPS
 
+    def _is_oracle_op(self, tx):
+        if tx.sender != tx.receiver:
+            return False
+        d = self._parse_op_data(tx)
+        return isinstance(d, dict) and d.get("op") in self.ORACLE_OPS
+
+    def _is_bridge_op(self, tx):
+        if tx.sender != tx.receiver:
+            return False
+        d = self._parse_op_data(tx)
+        return isinstance(d, dict) and d.get("op") in self.BRIDGE_OPS
+
+    def _is_dex_op(self, tx):
+        if tx.sender != tx.receiver:
+            return False
+        d = self._parse_op_data(tx)
+        return isinstance(d, dict) and d.get("op") in self.DEX_OPS
+
+    def _is_gov_op(self, tx):
+        if tx.sender != tx.receiver:
+            return False
+        d = self._parse_op_data(tx)
+        return isinstance(d, dict) and d.get("op") in self.GOV_OPS
+
+    def _is_did_op(self, tx):
+        if tx.sender != tx.receiver:
+            return False
+        d = self._parse_op_data(tx)
+        return isinstance(d, dict) and d.get("op") in self.DID_OPS
+
+    def _is_sub_op(self, tx):
+        if tx.sender != tx.receiver:
+            return False
+        d = self._parse_op_data(tx)
+        return isinstance(d, dict) and d.get("op") in self.SUB_OPS
+
     def _validate_socialfi_op(self, tx):
         return self.socialfi.validate_op(tx)
 
     def _validate_arb_op(self, tx):
         return self.arbitration.validate_op(tx)
+
+    def _validate_oracle_op(self, tx):
+        return self.oracle.validate_op(tx)
+
+    def _validate_bridge_op(self, tx):
+        return self.bridge.validate_op(tx)
+
+    def _validate_dex_op(self, tx):
+        return self.dex.validate_op(tx)
+
+    def _validate_gov_op(self, tx):
+        return self.governance.validate_op(tx)
+
+    def _validate_did_op(self, tx):
+        return self.did.validate_op(tx)
+
+    def _validate_sub_op(self, tx):
+        return self.subscription.validate_op(tx)
 
     @staticmethod
     def _parse_op_data(tx):
@@ -596,6 +695,48 @@ class NovaNode:
         self.balances[addr] = self.balances.get(addr, 0) - (tx.amount + gas)
         self.arbitration.apply_op(tx)
 
+    def _apply_oracle_op(self, tx):
+        addr = tx.sender
+        gas = self.gas_of(addr)
+        self.balances[addr] = self.balances.get(addr, 0) - (tx.amount + gas)
+        self.balances[self.economy.VALIDATOR_POOL] = self.balances.get(self.economy.VALIDATOR_POOL, 0) + gas
+        self.oracle.apply_op(tx)
+
+    def _apply_bridge_op(self, tx):
+        addr = tx.sender
+        gas = self.gas_of(addr)
+        self.balances[addr] = self.balances.get(addr, 0) - (tx.amount + gas)
+        self.balances[self.economy.VALIDATOR_POOL] = self.balances.get(self.economy.VALIDATOR_POOL, 0) + gas
+        self.bridge.apply_op(tx)
+
+    def _apply_dex_op(self, tx):
+        addr = tx.sender
+        gas = self.gas_of(addr)
+        self.balances[addr] = self.balances.get(addr, 0) - (tx.amount + gas)
+        self.balances[self.economy.VALIDATOR_POOL] = self.balances.get(self.economy.VALIDATOR_POOL, 0) + gas
+        self.dex.apply_op(tx)
+
+    def _apply_gov_op(self, tx):
+        addr = tx.sender
+        gas = self.gas_of(addr)
+        self.balances[addr] = self.balances.get(addr, 0) - (tx.amount + gas)
+        self.balances[self.economy.VALIDATOR_POOL] = self.balances.get(self.economy.VALIDATOR_POOL, 0) + gas
+        self.governance.apply_op(tx)
+
+    def _apply_did_op(self, tx):
+        addr = tx.sender
+        gas = self.gas_of(addr)
+        self.balances[addr] = self.balances.get(addr, 0) - (tx.amount + gas)
+        self.balances[self.economy.VALIDATOR_POOL] = self.balances.get(self.economy.VALIDATOR_POOL, 0) + gas
+        self.did.apply_op(tx)
+
+    def _apply_sub_op(self, tx):
+        addr = tx.sender
+        gas = self.gas_of(addr)
+        self.balances[addr] = self.balances.get(addr, 0) - (tx.amount + gas)
+        self.balances[self.economy.VALIDATOR_POOL] = self.balances.get(self.economy.VALIDATOR_POOL, 0) + gas
+        self.subscription.apply_op(tx)
+
     def gas_of(self, addr) -> float:
         """声誉驱动的交易费：信誉分 >= 80 享受 50% 折扣。"""
         try:
@@ -612,7 +753,9 @@ class NovaNode:
             gas = 0.0
         elif (self._is_stake_op(tx) or self._is_storage_op(tx) or self._is_storage_inc_op(tx)
               or self._is_compute_op(tx) or self._is_ai_op(tx) or self._is_socialfi_op(tx)
-              or self._is_arb_op(tx)):
+              or self._is_arb_op(tx) or self._is_oracle_op(tx) or self._is_bridge_op(tx)
+              or self._is_dex_op(tx) or self._is_gov_op(tx) or self._is_did_op(tx)
+              or self._is_sub_op(tx)):
             gas = self.gas_of(tx.sender)
         else:
             gas = self.economy.FIXED_GAS
@@ -685,6 +828,24 @@ class NovaNode:
             return
         if self._is_arb_op(tx):
             self._apply_arb_op(tx)
+            return
+        if self._is_oracle_op(tx):
+            self._apply_oracle_op(tx)
+            return
+        if self._is_bridge_op(tx):
+            self._apply_bridge_op(tx)
+            return
+        if self._is_dex_op(tx):
+            self._apply_dex_op(tx)
+            return
+        if self._is_gov_op(tx):
+            self._apply_gov_op(tx)
+            return
+        if self._is_did_op(tx):
+            self._apply_did_op(tx)
+            return
+        if self._is_sub_op(tx):
+            self._apply_sub_op(tx)
             return
         old_balance = self.balances.get(tx.receiver, 0)
         self.balances[tx.sender] = self.balances.get(tx.sender, 0) - (tx.amount + self.economy.FIXED_GAS)
@@ -856,6 +1017,12 @@ class NovaNode:
         self.ai_service.maintain()
         self.socialfi.maintain()
         self.arbitration.maintain()
+        self.oracle.maintain()
+        self.bridge.maintain()
+        self.dex.maintain()
+        self.governance.maintain()
+        self.did.maintain()
+        self.subscription.maintain()
         self.economy.release_early_rewards()
         if self.state_file:
             self.save_state()
@@ -1899,6 +2066,453 @@ class NovaNode:
             "task_spec": self.socialfi.recommend_task_spec(addr),
             "graph_hash": self.socialfi.graph_hash(),
         })
+    # ---------- 预言机 / 跨链桥 / DEX / 治理 / DID / 订阅 RPC ----------
+    async def _rpc_module_op(self, req, events):
+        """通用模块操作入口：data 为客户端构造的 JSON 字符串（op + 字段）。"""
+        guard = await self._rpc_guard(req)
+        if guard:
+            return guard
+        b = await self._read_json(req)
+        if not isinstance(b, dict) or not b.get("addr") or not isinstance(b.get("data"), str):
+            return web.json_response({"error": "缺少 addr/data"}, status=400)
+        try:
+            ts = int(b.get("timestamp"))
+        except (TypeError, ValueError):
+            ts = None
+        amt = b.get("amount", 0)
+        if not isinstance(amt, (int, float)) or isinstance(amt, bool) or not math.isfinite(amt) or amt < 0:
+            return web.json_response({"error": "金额无效"}, status=400)
+        tx = Tx(b["addr"], b["addr"], amt, [], b["data"],
+                b.get("sender_public_key", ""), b.get("signature", ""), timestamp=ts)
+        if not self.validate_tx(tx):
+            return web.json_response({"error": "交易校验失败（签名/规则）"}, status=400)
+        await self.broadcast_tx(tx)
+        ev = events.get(tx.txid, {})
+        return web.json_response({"status": "ok", "txid": tx.txid, **ev})
+
+    async def rpc_oracle_op(self, req):
+        return await self._rpc_module_op(req, self.store.oracle_events)
+
+    async def rpc_oracle_summary(self, req):
+        guard = await self._rpc_guard(req)
+        if guard:
+            return guard
+        return web.json_response(self.oracle.summary())
+
+    async def rpc_oracle_price(self, req):
+        guard = await self._rpc_guard(req)
+        if guard:
+            return guard
+        feed = req.match_info["feed"].upper()
+        agg = self.oracle.price(feed)
+        if agg is None:
+            return web.json_response({"feed": feed, "price": None})
+        return web.json_response({"feed": feed, **agg})
+
+    async def rpc_oracle_vrf(self, req):
+        guard = await self._rpc_guard(req)
+        if guard:
+            return guard
+        rid = req.match_info["request_id"]
+        r = self.oracle.vrf_result(rid)
+        if not r:
+            return web.json_response({"error": "not_found"}, status=404)
+        return web.json_response(r)
+
+    async def rpc_oracle_nodes(self, req):
+        guard = await self._rpc_guard(req)
+        if guard:
+            return guard
+        return web.json_response({"nodes": self._ser(self.store.oracle_nodes)})
+
+    async def rpc_oracle_ai(self, req):
+        guard = await self._rpc_guard(req)
+        if guard:
+            return guard
+        h = req.match_info["content_hash"]
+        v = self.oracle.ai_verification(h)
+        if not v:
+            return web.json_response({"content_hash": h, "status": "unknown"})
+        return web.json_response(v)
+
+    async def rpc_bridge_op(self, req):
+        return await self._rpc_module_op(req, self.store.bridge_events)
+
+    async def rpc_bridge_summary(self, req):
+        guard = await self._rpc_guard(req)
+        if guard:
+            return guard
+        return web.json_response(self.bridge.summary())
+
+    async def rpc_bridge_asset(self, req):
+        guard = await self._rpc_guard(req)
+        if guard:
+            return guard
+        symbol = req.match_info["symbol"].upper()
+        a = self.bridge.asset(symbol)
+        if not a:
+            return web.json_response({"error": "not_found"}, status=404)
+        return web.json_response(a)
+
+    async def rpc_bridge_deposits(self, req):
+        guard = await self._rpc_guard(req)
+        if guard:
+            return guard
+        items = sorted(self.store.bridge_deposits.values(), key=lambda d: d.get("created_at", 0), reverse=True)
+        return web.json_response({"deposits": self._ser(items[:100])})
+
+    async def rpc_bridge_withdrawals(self, req):
+        guard = await self._rpc_guard(req)
+        if guard:
+            return guard
+        items = sorted(self.store.bridge_withdrawals.values(), key=lambda d: d.get("created_at", 0), reverse=True)
+        return web.json_response({"withdrawals": self._ser(items[:100])})
+
+    async def rpc_dex_op(self, req):
+        return await self._rpc_module_op(req, self.store.dex_events)
+
+    async def rpc_dex_summary(self, req):
+        guard = await self._rpc_guard(req)
+        if guard:
+            return guard
+        return web.json_response(self.dex.summary())
+
+    async def rpc_dex_quote(self, req):
+        guard = await self._rpc_guard(req)
+        if guard:
+            return guard
+        q = req.query
+        try:
+            amount_in = float(q.get("amount_in", 0))
+            token_in = int(q.get("token_in", 0))
+        except (TypeError, ValueError):
+            return web.json_response({"error": "参数无效"}, status=400)
+        r = self.dex.quote(q.get("pair", ""), amount_in, token_in)
+        if not r:
+            return web.json_response({"error": "报价失败"}, status=400)
+        return web.json_response({"pair": q.get("pair"), "token_in": token_in, **r})
+
+    async def rpc_dex_split(self, req):
+        guard = await self._rpc_guard(req)
+        if guard:
+            return guard
+        q = req.query
+        try:
+            amount_in = float(q.get("amount_in", 0))
+            token_in = int(q.get("token_in", 0))
+        except (TypeError, ValueError):
+            return web.json_response({"error": "参数无效"}, status=400)
+        r = self.dex.split_quote(q.get("pair", ""), amount_in, token_in)
+        if not r:
+            return web.json_response({"error": "分拆报价失败"}, status=400)
+        return web.json_response({"pair": q.get("pair"), **r})
+
+    async def rpc_dex_lp(self, req):
+        guard = await self._rpc_guard(req)
+        if guard:
+            return guard
+        addr = req.match_info["addr"]
+        return web.json_response({"addr": addr,
+                                  "positions": [self.dex.lp_position(addr, pid) for pid in self.store.dex_pairs]})
+
+    async def rpc_dex_farm(self, req):
+        guard = await self._rpc_guard(req)
+        if guard:
+            return guard
+        pair = req.match_info["pair"]
+        addr = req.match_info["addr"]
+        u = self.dex.farm_user(pair, addr)
+        if not u:
+            return web.json_response({"error": "not_found"}, status=404)
+        return web.json_response(u)
+
+    async def rpc_gov_op(self, req):
+        return await self._rpc_module_op(req, self.store.gov_events)
+
+    async def rpc_gov_summary(self, req):
+        guard = await self._rpc_guard(req)
+        if guard:
+            return guard
+        return web.json_response(self.governance.summary())
+
+    async def rpc_gov_proposals(self, req):
+        guard = await self._rpc_guard(req)
+        if guard:
+            return guard
+        status = req.query.get("status")
+        return web.json_response({"proposals": self._ser(self.governance.list_proposals(status))})
+
+    async def rpc_gov_proposal(self, req):
+        guard = await self._rpc_guard(req)
+        if guard:
+            return guard
+        pid = req.match_info["pid"]
+        p = self.governance.proposal(pid)
+        if not p:
+            return web.json_response({"error": "not_found"}, status=404)
+        return web.json_response(self._ser(p))
+
+    async def rpc_gov_power(self, req):
+        guard = await self._rpc_guard(req)
+        if guard:
+            return guard
+        addr = req.match_info["addr"]
+        return web.json_response({"addr": addr, "voting_power": self.governance.voting_power(addr),
+                                  "delegate": self.store.gov_delegations.get(addr)})
+
+    async def rpc_did_op(self, req):
+        return await self._rpc_module_op(req, self.store.did_events)
+
+    async def rpc_did_summary(self, req):
+        guard = await self._rpc_guard(req)
+        if guard:
+            return guard
+        return web.json_response(self.did.summary())
+
+    async def rpc_did_profile(self, req):
+        guard = await self._rpc_guard(req)
+        if guard:
+            return guard
+        addr = req.match_info["addr"]
+        viewer = req.query.get("viewer") or None
+        prof = self.did.profile(addr, viewer)
+        if not prof:
+            return web.json_response({"error": "not_found"}, status=404)
+        return web.json_response(self._ser(prof))
+
+    async def rpc_did_reputation(self, req):
+        guard = await self._rpc_guard(req)
+        if guard:
+            return guard
+        addr = req.match_info["addr"]
+        viewer = req.query.get("viewer") or None
+        return web.json_response(self.did.reputation(addr, viewer))
+
+    async def rpc_sub_op(self, req):
+        return await self._rpc_module_op(req, self.store.sub_events)
+
+    async def rpc_sub_summary(self, req):
+        guard = await self._rpc_guard(req)
+        if guard:
+            return guard
+        return web.json_response(self.subscription.summary())
+
+    async def rpc_sub_creator(self, req):
+        guard = await self._rpc_guard(req)
+        if guard:
+            return guard
+        addr = req.match_info["addr"]
+        c = self.subscription.creator(addr)
+        if not c:
+            return web.json_response({"error": "not_found"}, status=404)
+        return web.json_response(self._ser(c))
+
+    async def rpc_sub_status(self, req):
+        guard = await self._rpc_guard(req)
+        if guard:
+            return guard
+        user = req.match_info["user"]
+        creator = req.match_info["creator"]
+        sub = self.subscription.subscription(user, creator)
+        if not sub:
+            return web.json_response({"user": user, "creator": creator, "status": "none"})
+        out = dict(sub)
+        out["active"] = self.subscription.is_active(user, creator)
+        return web.json_response(self._ser(out))
+
+    # ---------- 链浏览器 / 索引器 RPC ----------
+    async def rpc_chain_sync(self, req):
+        """增量同步：返回 after_height 之后的新区块、交易与合约部署。"""
+        guard = await self._rpc_guard(req)
+        if guard:
+            return guard
+        try:
+            after = max(0, int(req.query.get("after_height", 0)))
+        except (TypeError, ValueError):
+            return web.json_response({"error": "after_height 无效"}, status=400)
+        chain = self.consensus.chain
+        blocks = [b.to_dict() for b in chain if b.height > after]
+        known = set()
+        for b in chain:
+            known.update(b.txids)
+        # 已封存区块的交易 + 尚未封存但已确认的交易
+        txs = [v for k, v in self.store.tx_history.items() if k in known]
+        contracts = [{"address": a, "creator": self.store.contract_creator.get(a, ""),
+                      "created_at": None} for a in self.store.contracts]
+        return web.json_response({
+            "height": self.consensus.chain_height(),
+            "blocks": self._ser(blocks),
+            "txs": self._ser(txs),
+            "contracts": contracts,
+            "stats": self._chain_stats(),
+        })
+
+    async def rpc_chain_block(self, req):
+        guard = await self._rpc_guard(req)
+        if guard:
+            return guard
+        try:
+            height = int(req.match_info["height"])
+        except (TypeError, ValueError):
+            return web.json_response({"error": "高度无效"}, status=400)
+        chain = self.consensus.chain
+        if not (0 <= height < len(chain)):
+            return web.json_response({"error": "not_found"}, status=404)
+        b = chain[height].to_dict()
+        txs = [self.store.tx_history.get(txid, {"txid": txid}) for txid in b["txids"]]
+        return web.json_response({"block": self._ser(b), "txs": self._ser(txs)})
+
+    async def rpc_chain_search(self, req):
+        guard = await self._rpc_guard(req)
+        if guard:
+            return guard
+        q = (req.query.get("q") or "").strip().lower()
+        if not q:
+            return web.json_response({"results": []})
+        results = []
+        if len(q) >= 8 and all(ch in "0123456789abcdef" for ch in q):
+            for txid, v in self.store.tx_history.items():
+                if txid.startswith(q):
+                    results.append({"type": "tx", "id": txid, "label": "交易 " + txid[:18] + "..."})
+                    if len(results) >= 8:
+                        break
+            for addr in self.store.balances:
+                if addr.lower().startswith(q):
+                    results.append({"type": "address", "id": addr, "label": "地址 " + addr[:18] + "..."})
+                    if len(results) >= 8:
+                        break
+            for addr in self.store.contracts:
+                if addr.lower().startswith(q):
+                    results.append({"type": "contract", "id": addr, "label": "合约 " + addr[:18] + "..."})
+                    if len(results) >= 8:
+                        break
+        if q.isdigit():
+            h = int(q)
+            if h < len(self.consensus.chain):
+                results.append({"type": "block", "id": h,
+                                "label": "区块 #" + str(h)})
+        return web.json_response({"query": q, "results": results[:20]})
+
+    def _chain_stats(self):
+        return {
+            "height": self.consensus.chain_height(),
+            "total_txs": len(self.store.tx_history),
+            "total_addresses": len(self.store.balances),
+            "total_contracts": len(self.store.contracts),
+            "total_staked": _amt(sum(float(v) for v in self.store.stakes.values())),
+        }
+
+    async def rpc_chain_stats(self, req):
+        guard = await self._rpc_guard(req)
+        if guard:
+            return guard
+        return web.json_response(self._chain_stats())
+
+    # ---------- 测试网水龙头 RPC ----------
+    def _bootstrap_faucet(self):
+        """测试网模式：资金池为空且无发放记录时，一次性铸造测试币到水龙头池。"""
+        if self.store.balances.get(self.economy.FAUCET_POOL, 0) <= 0 and not self.store.faucet_receipts:
+            self.store.balances[self.economy.FAUCET_POOL] = self.economy.FAUCET_INITIAL_POOL
+            print(f"[FAUCET] 测试网水龙头资金池已铸造 {self.economy.FAUCET_INITIAL_POOL} NOVA")
+
+    async def rpc_faucet_status(self, req):
+        """GET /api/faucet/status：水龙头余额 / 今日发放 / 限频参数。"""
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        today = time.strftime("%Y-%m-%d")
+        daily = self.store.faucet_daily.get(today, {"count": 0, "amount": 0.0, "ips": {}})
+        return web.json_response({
+            "enabled": self.faucet_enabled,
+            "pool_balance": _amt(self.store.balances.get(self.economy.FAUCET_POOL, 0)),
+            "amount": self.economy.FAUCET_AMOUNT,
+            "today": {"date": today, "count": daily.get("count", 0),
+                      "amount": _amt(daily.get("amount", 0.0))},
+            "daily_cap": self.economy.FAUCET_DAILY_CAP,
+            "daily_ip_cap": self.economy.FAUCET_DAILY_IP_CAP,
+            "cooldown_seconds": self.economy.FAUCET_COOLDOWN,
+            "total_claimed": _amt(sum(float(c.get("total", 0)) for c in self.store.faucet_claims.values())),
+            "total_recipients": len(self.store.faucet_claims),
+        })
+
+    async def rpc_faucet_request(self, req):
+        """POST /api/faucet/request：免费领取测试 NOVA（限频：地址 24h 一次 / IP 每日 2 次 / 全局日限额）。"""
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        if not self.faucet_enabled:
+            return web.json_response({"error": "水龙头未启用（主网模式关闭）"}, status=403)
+        b = await self._read_json(req)
+        if not isinstance(b, dict):
+            return web.json_response({"error": "请求体不是合法 JSON"}, status=400)
+        addr = str(b.get("addr", "")).strip().lower()
+        fingerprint = str(b.get("fingerprint", "")).strip()
+        if not ADDRESS_RE.match(addr):
+            return web.json_response({"error": "地址格式不合法"}, status=400)
+        if addr in ("0x0000", self.economy.FAUCET_POOL) or addr.startswith("0x_"):
+            return web.json_response({"error": "该地址不可领取"}, status=400)
+
+        ip = req.remote
+        now = time.time()
+        today = time.strftime("%Y-%m-%d")
+
+        # 地址冷却：24 小时限领 1 次
+        claim = self.store.faucet_claims.get(addr, {})
+        if claim and now - float(claim.get("last_ts", 0)) < self.economy.FAUCET_COOLDOWN:
+            remain = int(self.economy.FAUCET_COOLDOWN - (now - float(claim.get("last_ts", 0))))
+            return web.json_response({"error": f"该地址 24 小时内已领取，{remain // 3600} 小时后再试"}, status=400)
+
+        # 设备指纹唯一性（可选）
+        if fingerprint and not self.security.check_device_unique(fingerprint):
+            return web.json_response({"error": "设备已领取过测试币"}, status=400)
+
+        # 每日 IP 限频
+        daily = self.store.faucet_daily.get(today, {"count": 0, "amount": 0.0, "ips": {}})
+        ips = daily.setdefault("ips", {})
+        if int(ips.get(ip, 0)) >= self.economy.FAUCET_DAILY_IP_CAP:
+            return web.json_response({"error": "同一 IP 今日领取次数已达上限"}, status=400)
+
+        # 全局日限额
+        if float(daily.get("amount", 0.0)) + self.economy.FAUCET_AMOUNT > self.economy.FAUCET_DAILY_CAP:
+            return web.json_response({"error": "今日发放额度已用尽，请明日再来"}, status=400)
+
+        # 资金池充足
+        pool = self.store.balances.get(self.economy.FAUCET_POOL, 0)
+        if pool < self.economy.FAUCET_AMOUNT:
+            return web.json_response({"error": "水龙头资金池余额不足"}, status=400)
+
+        # 发放
+        self.store.balances[self.economy.FAUCET_POOL] = pool - self.economy.FAUCET_AMOUNT
+        self.store.balances[addr] = self.store.balances.get(addr, 0) + self.economy.FAUCET_AMOUNT
+
+        # 记录
+        self.store.faucet_claims[addr] = {
+            "last_ts": now,
+            "total": float(claim.get("total", 0)) + self.economy.FAUCET_AMOUNT,
+            "count": int(claim.get("count", 0)) + 1,
+            "ip": ip,
+        }
+        daily["count"] = int(daily.get("count", 0)) + 1
+        daily["amount"] = float(daily.get("amount", 0.0)) + self.economy.FAUCET_AMOUNT
+        ips[ip] = int(ips.get(ip, 0)) + 1
+        self.store.faucet_daily[today] = daily
+
+        self.store.faucet_seq += 1
+        rid = "faucet-" + hashlib.sha256(f"{addr}:{now}:{self.store.faucet_seq}".encode()).hexdigest()[:16]
+        self.store.faucet_receipts[rid] = {
+            "addr": addr, "amount": self.economy.FAUCET_AMOUNT, "ts": now, "ip": ip, "seq": self.store.faucet_seq,
+        }
+        if fingerprint:
+            self.security.record_device(fingerprint, addr)
+
+        print(f"[FAUCET] {addr[:12]}... 领取 {self.economy.FAUCET_AMOUNT} NOVA（今日 {daily['count']} 次）")
+        return web.json_response({
+            "status": "领取成功",
+            "amount": self.economy.FAUCET_AMOUNT,
+            "addr": addr,
+            "balance": _amt(self.store.balances[addr]),
+            "receipt": rid,
+            "remaining_today": _amt(self.economy.FAUCET_DAILY_CAP - float(daily["amount"])),
+        })
+
     # ---------- 社区仲裁 RPC ----------
     async def rpc_arb_summary(self, req):
         """GET /api/arb/summary：仲裁系统全局概况。"""
@@ -2015,13 +2629,14 @@ if __name__ == "__main__":
     p.add_argument("--validator-key", default="", help="PoS 验证者私钥（hex seed，32 字节），pos 模式下用于出块签名")
     p.add_argument("--epoch-len", type=int, default=10800, help="PoS epoch 块数（默认 10800 ≈ 7.5 天）")
     p.add_argument("--sync-from-seeds", action="store_true", help="接受种子节点状态快照同步（默认关闭，防状态接管）")
+    p.add_argument("--faucet", action="store_true", help="启用测试网水龙头（主网请勿开启）")
     a = p.parse_args()
     node = NovaNode(host=a.host, p2p=a.p2p, rpc=a.rpc,
                     seeds=[a.seed] if a.seed else [],
                     genesis=a.genesis,
                     cert_file=a.cert, key_file=a.key, use_tls=not a.no_tls, state_file=a.state,
                     consensus_mode=a.consensus, validator_key=a.validator_key or None,
-                    epoch_len=a.epoch_len, sync_from_seeds=a.sync_from_seeds)
+                    epoch_len=a.epoch_len, sync_from_seeds=a.sync_from_seeds, faucet=a.faucet)
     asyncio.run(node.start())
 
 
