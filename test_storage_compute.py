@@ -356,3 +356,26 @@ async def test_compute_rpc_flow():
         assert node.balances[w2.address] == pytest.approx(100000.0 - 2 * node.economy.FIXED_GAS + 4.0)
     finally:
         await client.close()
+
+
+# ---------------------------------------------------------------------------
+# 审计回归 F-02：pin 每地址上限 + 禁止自认领 + 模块级基金守卫
+# ---------------------------------------------------------------------------
+def test_storage_pin_limits_and_self_claim():
+    node = _node()
+    attacker = QuantumWallet()
+    _fund(node, attacker.address)
+    _fund_eco(node, 20000.0)
+    _apply(node, _signed_tx(attacker, "nova:storage:register", capacity_gb=1024))
+    cid = _cid(50)
+    _apply(node, _signed_tx(attacker, "nova:storage:pin", cid=cid, size_gb=10, duration_days=30))
+    # 自认领被拒绝
+    assert not node.validate_tx(_signed_tx(attacker, "nova:storage:claim", cid=cid, seal="1" * 64))
+    # 每地址承诺总额上限：0.3 + 3737.6 <= 5000 通过，再 pin 3737.6 超限拒绝
+    _apply(node, _signed_tx(attacker, "nova:storage:pin", cid=_cid(51), size_gb=1024, duration_days=3650))
+    over = _signed_tx(attacker, "nova:storage:pin", cid=_cid(52), size_gb=1024, duration_days=3650)
+    assert not node.validate_tx(over)
+    # 模块级纵深防御：基金不足时 pin 拒绝且不产生负余额
+    node2 = _node()
+    assert node2.storage_net.pin("0x" + "1" * 40, "0x" + "2" * 64, 1024.0, 3650) == 0.0
+    assert node2.balances.get(node2.economy.ECOSYSTEM_FUND, 0.0) == 0.0

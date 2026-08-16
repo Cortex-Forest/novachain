@@ -231,6 +231,11 @@ class Oracle:
                   if v.get("active", True)}
         if len(prices) < 2:
             return None
+        # 审计 F-03：聚合至少需要 2 个独立节点维护的源（防单节点女巫多源）
+        nodes = {v.get("node") for v in sources.values()
+                 if v.get("active", True) and v.get("node")}
+        if len(nodes) < 2:
+            return None
         ordered = sorted(prices.values())
         median = ordered[len(ordered) // 2] if len(ordered) % 2 else \
             (ordered[len(ordered) // 2 - 1] + ordered[len(ordered) // 2]) / 2.0
@@ -454,6 +459,17 @@ class Oracle:
             return False
         if not math.isfinite(price) or not (PRICE_MIN <= price <= PRICE_MAX):
             return False
+        # 审计 F-03：源归属绑定 + 单节点单源约束（防女巫多源操纵聚合价）
+        sources = self.store.oracle_price_sources.get(feed, {})
+        for src, v in sources.items():
+            if not v.get("active", True):
+                continue
+            owner = v.get("node")
+            if src == source:
+                if owner and owner != tx.sender:
+                    return False          # 源已被其他节点绑定，不得接管
+            elif owner == tx.sender:
+                return False              # 同一节点在同一 feed 只能维护一个源
         agg = self.store.oracle_feeds.get(feed)
         if agg:
             dev = abs(price - agg["price"]) / agg["price"]

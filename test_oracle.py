@@ -168,3 +168,28 @@ def test_ai_verification_reward():
     assert node.balances[node_w.address] == pytest.approx(bal0 + 0.1)
     # 未验证的哈希查询返回 unknown
     assert node.oracle.ai_verification("0x" + "00" * 32) is None
+
+
+# ---------------------------------------------------------------------------
+# 审计回归 F-03：node→source 绑定 + 聚合需独立节点
+# ---------------------------------------------------------------------------
+def test_oracle_node_source_binding():
+    node = _node()
+    ws = _register(node, 2)
+    a, b = [w for w, _, _ in ws]
+    _apply(node, _signed_tx(a, "nova:oracle:price:update", feed="USDT/USD", source="chainlink", price=100.0))
+    # 同一节点上报第二个源 -> 拒绝
+    assert not node.validate_tx(_signed_tx(a, "nova:oracle:price:update", feed="USDT/USD",
+                                           source="pyth", price=101.0))
+    # 其他节点接管已有源 -> 拒绝
+    assert not node.validate_tx(_signed_tx(b, "nova:oracle:price:update", feed="USDT/USD",
+                                           source="chainlink", price=99.0))
+    # 第二个独立节点上报另一个源 -> 通过并聚合
+    _apply(node, _signed_tx(b, "nova:oracle:price:update", feed="USDT/USD", source="pyth", price=101.0))
+    assert node.store.oracle_feeds["USDT/USD"]["price"] == pytest.approx(100.5)
+    # 绕过校验直接写库时，聚合守卫要求 ≥2 个独立节点
+    node.store.oracle_price_sources["ETH/USD"] = {
+        "chainlink": {"price": 2000.0, "updated_at": time.time(), "node": a.address, "active": True},
+        "pyth": {"price": 2001.0, "updated_at": time.time(), "node": a.address, "active": True},
+    }
+    assert node.oracle.aggregate("ETH/USD") is None

@@ -14,7 +14,8 @@ from core.chat import (ChatStore, chat_signature_data, validate_chat_payload,
                        message_id, ADDRESS_RE, PUBKEY_RE)
 from core.storage_network import (StorageNetwork, CID_RE, HEX64_RE, MAX_REPLICAS,
                                   MAX_CAPACITY_GB, MIN_SIZE_GB, MAX_SIZE_GB,
-                                  MIN_DURATION_DAYS, MAX_DURATION_DAYS, day_index)
+                                  MIN_DURATION_DAYS, MAX_DURATION_DAYS, day_index,
+                                  MAX_PINS_PER_ADDR, MAX_PIN_COMMIT_PER_ADDR)
 from core.storage_incentive import (StorageIncentive, MAX_INC_REPLICAS, MIN_INC_SIZE_GB,
                                     MAX_INC_SIZE_GB, CHALLENGE_FILES, HEARTBEAT_INTERVAL)
 from core.compute import (ComputeMarket, RESULT_HASH_RE, MAX_WORKERS, MAX_SPEC_LEN,
@@ -319,6 +320,13 @@ class NovaNode:
             if not (isinstance(days, (int, float)) and not isinstance(days, bool)
                     and MIN_DURATION_DAYS <= days <= MAX_DURATION_DAYS):
                 return False
+            # 审计 F-02：每地址 pin 数量与承诺总额上限，防无限 pin 锁定生态基金
+            mine = [c for c in self.store.storage_claims.values() if c.get("owner") == tx.sender]
+            if len(mine) >= MAX_PINS_PER_ADDR:
+                return False
+            committed = sum(float(c.get("reward_pool", 0.0)) for c in mine)
+            if committed + self.storage_net.pin_reward(size, days) > MAX_PIN_COMMIT_PER_ADDR:
+                return False
             return self.balances.get(self.economy.ECOSYSTEM_FUND, 0) >= self.storage_net.pin_reward(size, days)
         if d.get("op") == "nova:storage:claim":
             cid = d.get("cid", "")
@@ -328,6 +336,8 @@ class NovaNode:
                 return False
             if not claim or time.time() > claim["expires_at"]:
                 return False
+            if tx.sender == claim.get("owner"):
+                return False            # 审计 F-02：固定者不得自认领
             if tx.sender not in self.store.storage_providers:
                 return False
             if tx.sender in claim["providers"] or len(claim["providers"]) >= MAX_REPLICAS:

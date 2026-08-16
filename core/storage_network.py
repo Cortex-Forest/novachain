@@ -30,6 +30,8 @@ MIN_DURATION_DAYS = 1
 MAX_DURATION_DAYS = 3650
 MAX_CAPACITY_GB = 1048576.0          # 单节点声明容量上限（1 PB）
 DEFAULT_CHAIN_LEN = 365              # 哈希链长度：每天一次证明约可用一年
+MAX_PINS_PER_ADDR = 200              # 每地址固定文件数量上限（防无限 pin）
+MAX_PIN_COMMIT_PER_ADDR = 5000.0     # 每地址固定奖励承诺总额上限（NOVA，防基金被单地址抽干）
 
 
 def day_index() -> int:
@@ -70,6 +72,9 @@ class StorageNetwork:
     # ---------- 固定文件（生态基金注入固定奖励池） ----------
     def pin(self, creator: str, cid: str, size_gb: float, duration_days: float) -> float:
         reward = self.pin_reward(size_gb, duration_days)
+        # 审计 F-02：生态基金不足时拒绝（模块级纵深防御，不再产生负余额）
+        if self.store.balances.get(self.economy.ECOSYSTEM_FUND, 0.0) < reward:
+            return 0.0
         self.store.balances[self.economy.ECOSYSTEM_FUND] = self.store.balances.get(self.economy.ECOSYSTEM_FUND, 0) - reward
         self.store.storage_claims[cid] = {
             "owner": creator,
@@ -89,6 +94,8 @@ class StorageNetwork:
             return False
         if provider not in self.store.storage_providers:
             return False
+        if provider == claim.get("owner"):
+            return False            # 审计 F-02：固定者不得自认领（防自 pin 自领抽干基金）
         if provider in claim["providers"] or len(claim["providers"]) >= MAX_REPLICAS:
             return False
         key = self._seal_key(provider, cid)

@@ -53,7 +53,13 @@ class Governance:
         return float(lock["amount"]) if lock else 0.0
 
     def voting_power(self, addr, _seen=None):
-        """余额 + 质押 + 锁仓 + 所有委托给本地址的投票权（防循环）。"""
+        """地址最终可投票权：已委托的地址不再保留权力，全部转移给受托方（审计 F-06 防一币多票）。"""
+        if addr in self.store.gov_delegations:
+            return 0.0
+        return self._gross_power(addr, _seen)
+
+    def _gross_power(self, addr, _seen=None):
+        """委托链原始权力汇总：自身资产 + 收到的委托（含再委托透传），防循环。"""
         _seen = _seen or set()
         if addr in _seen:
             return 0.0
@@ -63,7 +69,7 @@ class Governance:
                  + self._locked_of(addr))
         for delegator, delegate in self.store.gov_delegations.items():
             if delegate == addr:
-                power += self.voting_power(delegator, _seen)
+                power += self._gross_power(delegator, _seen)
         return power
 
     def circulating_supply(self):

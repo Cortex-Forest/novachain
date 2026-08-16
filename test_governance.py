@@ -210,3 +210,32 @@ def test_gov_controls_dex_and_bridge():
     p2["timelock_end"] = time.time() - 1
     _apply(node, _signed_tx(proposer, "nova:gov:execute", proposal_id=pid2))
     assert node.bridge._daily_limit_usd() == pytest.approx(2000000.0)
+
+
+# ---------------------------------------------------------------------------
+# 审计回归 F-06：委托链不放大投票权（一币一票）
+# ---------------------------------------------------------------------------
+def test_gov_delegation_chain_no_amplification():
+    node = _node()
+    a = QuantumWallet()
+    _fund(node, a.address, 1000)
+    b = QuantumWallet()
+    _fund(node, b.address, 1000)
+    c = QuantumWallet()
+    _fund(node, c.address, 1000)
+    _apply(node, _signed_tx(a, "nova:gov:delegate", to=b.address))
+    _apply(node, _signed_tx(b, "nova:gov:delegate", to=c.address))
+    # 已委托地址不再保留权力，全部转移给最终受托方（c 自身 1000 + b 委托 1000 + a 委托 1000 = 3000）
+    assert node.governance.voting_power(a.address) == 0.0
+    assert node.governance.voting_power(b.address) == 0.0
+    assert node.governance.voting_power(c.address) == pytest.approx(3000.0)
+    total = (node.governance.voting_power(a.address)
+             + node.governance.voting_power(b.address)
+             + node.governance.voting_power(c.address))
+    assert total == pytest.approx(3000.0)   # 总票权 = 总供应（1000x3），无放大
+    # 委托环：不放大也不死循环（d 500 -> a -> b -> c）
+    d = QuantumWallet()
+    _fund(node, d.address, 500)
+    _apply(node, _signed_tx(d, "nova:gov:delegate", to=a.address))
+    assert node.governance.voting_power(c.address) == pytest.approx(3500.0)
+    assert node.governance.voting_power(a.address) == 0.0

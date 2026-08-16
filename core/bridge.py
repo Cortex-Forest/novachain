@@ -27,6 +27,7 @@ BRIDGE_STAKE = 1000.0            # 桥节点质押（NOVA）
 BRIDGE_MAX_NODES = 21
 REQUIRED_SIGS = 3                # 3/5 多签
 TOTAL_SIGS = 5
+NODE_MIN_AGE = 3600              # 桥节点注册后最小年龄（秒）：未满不可参与多签（防快速女巫）
 FEE_RATIO = 0.001                # 0.1% 手续费
 FEE_MIN_USD = 1.0                # 最低 1 USDT
 DAILY_LIMIT_USD = 1_000_000.0    # 每日跨链额度上限（USD）
@@ -65,7 +66,13 @@ class Bridge:
             if feed:
                 p = self.oracle.price(feed)
                 if p:
-                    return float(amount) * p
+                    # oracle.price() 普通 feed 返回 dict、派生 feed 返回 float、无价返回 None；
+                    # 统一归一为数值，避免 float * dict 类型错误（审计 F-05）
+                    px = p.get("price") if isinstance(p, dict) else p
+                    if px is not None:
+                        px = float(px)
+                        if px > 0:
+                            return float(amount) * px
         return float(amount) * SUPPORTED[asset]["fallback_usd"]
 
     def _fee(self, asset, amount):
@@ -331,7 +338,24 @@ class Bridge:
                 return False
             if len(dep.get("sigs", [])) >= REQUIRED_SIGS:
                 return False
-            return tx.sender not in dep.get("sigs", [])
+            if tx.sender in dep.get("sigs", []):
+                return False
+            # 防女巫：节点注册后需经过最小年龄才能参与多签（审计 F-01）
+            node = self.store.bridge_nodes.get(tx.sender)
+            if node and time.time() < float(node.get("registered_at", 0)) + NODE_MIN_AGE:
+                return False
+            # 观察一致性：签名节点必须提供与存款一致的源链事件观察，
+            # 防止「单节点提交伪造存款、其余节点无脑签名」（审计 F-01）
+            obs_tx = d.get("source_tx", "")
+            obs_addr = d.get("source_addr", "")
+            obs_amount = d.get("source_amount")
+            if obs_tx != dep.get("source_tx") or obs_addr != dep.get("source_addr"):
+                return False
+            if not isinstance(obs_amount, (int, float)) or isinstance(obs_amount, bool):
+                return False
+            if abs(float(obs_amount) - float(dep.get("amount", 0.0))) > 1e-9:
+                return False
+            return True
         if op == "nova:bridge:deposit:claim":
             if tx.amount != 0:
                 return False
@@ -367,6 +391,12 @@ class Bridge:
         elif op == "nova:bridge:deposit:sign":
             dep = self.store.bridge_deposits[d["deposit_id"]]
             self._add_sig(dep, "sigs", tx.sender)
+            dep.setdefault("sig_observations", {})[tx.sender] = {
+                "source_tx": d.get("source_tx", ""),
+                "source_addr": d.get("source_addr", ""),
+                "amount": float(d.get("source_amount", 0.0)),
+                "ts": time.time(),
+            }
             if self._sigs_ok(dep):
                 dep["status"] = "held" if dep.get("large") else "ready"
                 dep["confirmed_at"] = time.time()
@@ -427,7 +457,13 @@ class Bridge:
                 return False
             if len(wd.get("sigs", [])) >= REQUIRED_SIGS:
                 return False
-            return tx.sender not in wd.get("sigs", [])
+            if tx.sender in wd.get("sigs", []):
+                return False
+            # 防女巫：节点最小年龄同样适用于跨出多签（审计 F-01）
+            node = self.store.bridge_nodes.get(tx.sender)
+            if node and time.time() < float(node.get("registered_at", 0)) + NODE_MIN_AGE:
+                return False
+            return True
         if op == "nova:bridge:withdraw:confirm":
             if not self._is_node(tx.sender) or tx.amount != 0:
                 return False
