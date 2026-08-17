@@ -149,7 +149,7 @@ class AIService:
         m = self.store.ai_muso
         m["due"] = False
         m["last_run"] = time.time()
-        m["last_run_day"] = time.strftime("%Y-%m-%d")
+        m["last_run_day"] = time.strftime("%Y-%m-%d", time.gmtime())
         return True
 
     def suggest_price(self, task_type: str = "ai_music", sales: int = 0,
@@ -219,7 +219,7 @@ class AIService:
         m["today_count"] = int(m.get("today_count", 0)) + 1
         m["total_generated"] = int(m.get("total_generated", 0)) + 1
         m["last_run"] = time.time()
-        m["last_run_day"] = time.strftime("%Y-%m-%d")
+        m["last_run_day"] = time.strftime("%Y-%m-%d", time.gmtime())
         self._fund_ledger("income", "work_publish", d.get("trigger_id") or wid,
                           addr, 0.0, "作品上架「" + work["title"] + "」售价 " + str(work["price"]) + " NOVA")
         return work
@@ -319,7 +319,7 @@ class AIService:
             return False, "基金余额不足"
         if amount <= FUND_SINGLE_SPEND_LIMIT:
             # 小额支出受单监护人单日上限约束（H-04：单监护人不能全量提走）
-            day = time.strftime("%Y-%m-%d", time.localtime())
+            day = time.strftime("%Y-%m-%d", time.gmtime())
             spent = float(self.store.ai_fund_spend_day.get(day + "|" + addr, 0.0))
             if spent + float(amount) > FUND_SINGLE_SPEND_LIMIT:
                 return False, "超过单监护人单日支出上限（" + str(FUND_SINGLE_SPEND_LIMIT) + " NOVA）"
@@ -343,7 +343,7 @@ class AIService:
         # 小额支出：即时转账 + 记录单日额度
         self.store.balances[AI_FUND] = self.store.balances.get(AI_FUND, 0.0) - amount
         self.store.balances[d["recipient"]] = self.store.balances.get(d["recipient"], 0.0) + amount
-        day = time.strftime("%Y-%m-%d", time.localtime())
+        day = time.strftime("%Y-%m-%d", time.gmtime())
         key = day + "|" + addr
         self.store.ai_fund_spend_day[key] = float(self.store.ai_fund_spend_day.get(key, 0.0)) + amount
         self._fund_ledger("expense", "fund_spend", d["recipient"], addr, amount,
@@ -418,11 +418,11 @@ class AIService:
     def maintain(self, now: float = None):
         now = time.time() if now is None else now
         m = self.store.ai_muso
-        today = time.strftime("%Y-%m-%d", time.localtime(now))
+        today = time.strftime("%Y-%m-%d", time.gmtime(now))
         if m.get("last_run_day") != today:
             m["today_count"] = 0
         if m.get("enabled"):
-            lt = time.localtime(now)
+            lt = time.gmtime(now)
             due = False
             if m["schedule"] == "daily" and lt.tm_hour >= int(m.get("hour", 0)):
                 due = True
@@ -431,7 +431,7 @@ class AIService:
             if m.get("last_run_day") != today and due:
                 m["due"] = True
         # H-04：清理过期待审批与陈旧单日统计
-        today = time.strftime("%Y-%m-%d", time.localtime(now))
+        today = time.strftime("%Y-%m-%d", time.gmtime(now))
         for k in list(self.store.ai_fund_spend_day):
             if not k.startswith(today + "|"):
                 del self.store.ai_fund_spend_day[k]

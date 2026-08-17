@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """审核回归测试：覆盖 P0/P1 修复点。"""
 import asyncio
+import hashlib
 import json
 import time
 
@@ -238,3 +239,378 @@ def test_socialfi_ids_deterministic_across_nodes():
             if getattr(a2.store, attr):
                 dom2 |= set(getattr(a2.store, attr))
         assert dom1 == dom2 and len(dom1) == 1, (op, dom1, dom2)
+
+
+# ---------------------------------------------------------------------------
+# H-1: AI 作品购买 / 一键触发必须从发起者余额扣款（防凭空铸币）
+# ---------------------------------------------------------------------------
+def test_h1_ai_work_buy_and_trigger_deduct_amount():
+    node = _node()
+    owner, ai, buyer = QuantumWallet(), QuantumWallet(), QuantumWallet()
+    for w in (owner, ai, buyer):
+        _fund(node, w.address)
+
+    _apply(node, _signed_tx(ai, "nova:ai:register", name="AI 诗灵", owner=owner.address,
+                            daily_budget=19.0, meta="model:novapoet-v1"))
+    _apply(node, _signed_tx(ai, "nova:ai:work:create", title="夜航",
+                            cid="bafy" + "a" * 46, price=10.0))
+    wid = next(iter(node.store.ai_works))
+    gas = node.gas_of(buyer.address)
+
+    # 购买：买家扣 10 + gas；分账基于实际支付 70/20/10（不再凭空铸造）
+    bal0 = node.balances[buyer.address]
+    artist0 = node.balances[ai.address]
+    fund0 = node.balances.get("0x_ai_growth_fund", 0.0)
+    _apply(node, _signed_tx(buyer, "nova:ai:work:buy", amount=10.0, wid=wid))
+    assert node.balances[buyer.address] == pytest.approx(bal0 - 10.0 - gas)
+    assert node.balances[ai.address] == pytest.approx(artist0 + 7.0)
+    assert node.balances.get("0x_ai_growth_fund", 0.0) == pytest.approx(fund0 + 1.0)
+
+    # 一键触发：触发者扣 TRIGGER_FEE(2) + gas，AI 基金 +2
+    bal0 = node.balances[buyer.address]
+    fund0 = node.balances.get("0x_ai_growth_fund", 0.0)
+    _apply(node, _signed_tx(buyer, "nova:ai:trigger", amount=2.0, service_type="suno"))
+    assert node.balances[buyer.address] == pytest.approx(bal0 - 2.0 - node.gas_of(buyer.address))
+    assert node.balances.get("0x_ai_growth_fund", 0.0) == pytest.approx(fund0 + 2.0)
+
+
+# ---------------------------------------------------------------------------
+# H-2: 收益共享 claim 不得重复领取抽干整池
+# ---------------------------------------------------------------------------
+def test_h2_rev_claim_cannot_drain_pool():
+    node = _node()
+    creator, b, c = QuantumWallet(), QuantumWallet(), QuantumWallet()
+    for w in (creator, b, c):
+        _fund(node, w.address)
+    _apply(node, _signed_tx(creator, "nova:rev:create", name="版税基金"))
+    rid = next(iter(node.store.revenue_shares))
+    _apply(node, _signed_tx(b, "nova:rev:invest", amount=60.0, rid=rid))   # 60%
+    _apply(node, _signed_tx(c, "nova:rev:invest", amount=40.0, rid=rid))   # 40%
+    _apply(node, _signed_tx(creator, "nova:rev:royalty", amount=1000.0, rid=rid))
+
+    # B 反复领取：合计不得超过其公平份额 600（修复前会抽干整池 1000）
+    for _ in range(6):
+        tx = _signed_tx(b, "nova:rev:claim", rid=rid)
+        if not node.validate_tx(tx):
+            break
+        node.apply_tx(tx)
+    r = node.store.revenue_shares[rid]
+    total_b = float(r.get("paid", {}).get(b.address, 0.0))
+    assert total_b == pytest.approx(600.0)
+    assert r["pool"] == pytest.approx(400.0)
+    # C 仍可领取自己的 400
+    _apply(node, _signed_tx(c, "nova:rev:claim", rid=rid))
+    assert r["pool"] == pytest.approx(0.0)
+
+
+# ---------------------------------------------------------------------------
+# H-3: 盲盒 EV 约束 + 禁自开 + 奖励由储备金支付（不铸币）
+# ---------------------------------------------------------------------------
+def test_h3_blindbox_no_mint_and_no_self_open():
+    node = _node()
+    creator, player = QuantumWallet(), QuantumWallet()
+    for w in (creator, player):
+        _fund(node, w.address)
+
+    # EV(1000) > price(0.01) 的盲盒被拒绝（修复前可每开一次凭空铸 1000）
+    bad_tiers = [{"name": "大奖", "weight": 1, "reward_type": "nova", "reward_amount": 1000.0}]
+    assert not node.validate_tx(_signed_tx(creator, "nova:blind:create",
+                                           name="x", commit="ab" * 32, price=0.01, tiers=bad_tiers))
+
+    seed = "cd" * 32
+    commit = hashlib.sha3_256(seed.encode()).hexdigest()
+    tiers = [{"name": "奖", "weight": 1, "reward_type": "nova", "reward_amount": 5.0}]
+    _apply(node, _signed_tx(creator, "nova:blind:create", name="y", price=10.0,
+                            commit=commit, tiers=tiers, reserve=100.0))
+    bid = next(iter(node.store.blindboxes))
+    _apply(node, _signed_tx(creator, "nova:blind:reveal", bid=bid, seed=seed))
+    box = node.store.blindboxes[bid]
+
+    # 创建者不得自开
+    assert not node.validate_tx(_signed_tx(creator, "nova:blind:open", amount=10.0, bid=bid, draws=1))
+
+    # 玩家开盒：奖励从 reserve 支付（余额变化 = -10 - gas + 5），不再凭空铸造
+    reserve0 = box["reserve"]
+    bal0 = node.balances[player.address]
+    _apply(node, _signed_tx(player, "nova:blind:open", amount=10.0, bid=bid, draws=1))
+    assert node.balances[player.address] == pytest.approx(bal0 - 10.0 - node.gas_of(player.address) + 5.0)
+    assert box["reserve"] == pytest.approx(reserve0 - 5.0)
+
+    # 无储备金的盲盒：nova 奖励只付 0（不铸币）；由原创建者再发一个盒子，玩家来开
+    _apply(node, _signed_tx(creator, "nova:blind:create", name="z", price=10.0,
+                            commit=commit, tiers=tiers))
+    bid2 = next(k for k, b in node.store.blindboxes.items() if b["name"] == "z")
+    _apply(node, _signed_tx(creator, "nova:blind:reveal", bid=bid2, seed=seed))
+    bal0 = node.balances[player.address]
+    _apply(node, _signed_tx(player, "nova:blind:open", amount=10.0, bid=bid2, draws=1))
+    assert node.balances[player.address] == pytest.approx(bal0 - 10.0 - node.gas_of(player.address))
+
+
+# ---------------------------------------------------------------------------
+# M-1: 算力争议驳回时只回补实际回拨额（防重复入账/铸币）
+# ---------------------------------------------------------------------------
+def _stake_validator(node, w, amt):
+    ts = int(time.time())
+    tx = Tx(w.address, w.address, amt, [], "nova:stake", w.public_key_hex(), "", timestamp=ts)
+    tx.signature = w.sign(tx.signing_data())
+    _apply(node, tx)
+
+
+def _register_node(node, w):
+    _apply(node, _signed_tx(w, "nova:compute:register", cpu_cores=8, gpu_model="RTX 4090",
+                            gpu_vram_gb=24, ram_gb=64, storage_gb=200, region="cn-east", latency_ms=30))
+
+
+def _stake_node(node, w, amt=200.0):
+    _apply(node, _signed_tx(w, "nova:compute:stake", amount=amt))
+
+
+def test_m1_compute_dispute_dismiss_restores_claw_only():
+    node = _node()
+    creator, w1, w2 = QuantumWallet(), QuantumWallet(), QuantumWallet()
+    for w in (creator, w1, w2):
+        _fund(node, w.address)
+    for w in (w1, w2):
+        _register_node(node, w)
+        _stake_node(node, w)
+    _apply(node, _signed_tx(creator, "nova:compute:publish", amount=20.0,
+                            spec="超分", task_type="ai_image", mode="grab", expires_in=3600))
+    tid = next(iter(node.store.compute_tasks))
+    _apply(node, _signed_tx(w1, "nova:compute:accept", task_id=tid))
+    _apply(node, _signed_tx(w2, "nova:compute:accept", task_id=tid))
+    r = "dd" * 32
+    _apply(node, _signed_tx(w1, "nova:compute:submit", task_id=tid, result_hash=r))
+    _apply(node, _signed_tx(w2, "nova:compute:submit", task_id=tid, result_hash=r))
+    task = node.store.compute_tasks[tid]
+    assert task["status"] == "completed"
+    share = task["shares"][w1.address]
+    # w1 在异议窗口内把报酬转走（余额压到 1），争议冻结只能回拨 1
+    node.balances[w1.address] = 1.0
+    _apply(node, _signed_tx(creator, "nova:compute:dispute", task_id=tid, reason="再验一次"))
+    task = node.store.compute_tasks[tid]
+    assert task["status"] == "disputed"
+    clawed = task["clawed"][w1.address]
+    assert clawed <= 1.0 and clawed < share
+    voters = []
+    for _ in range(3):
+        v = QuantumWallet()
+        _fund(node, v.address)
+        _stake_validator(node, v, 1000)
+        voters.append(v)
+    for v in voters:
+        _apply(node, _signed_tx(v, "nova:compute:vote", task_id=tid, support="dismiss"))
+    node.compute_market._settle_disputes()
+    task = node.store.compute_tasks[tid]
+    assert task["status"] == "completed"
+    # 修复后：w1 被冻结时余额归零，驳回后只恢复实际回拨的 clawed（< share），
+    # 不会因完整 share 重复入账（修复前会凭空铸造 share-claw）
+    assert node.balances[w1.address] == pytest.approx(clawed)
+    assert node.balances[w1.address] < share
+
+
+# ---------------------------------------------------------------------------
+# M-3: 存储激励升级质押不得绕过 MAX_STAKE / MAX_TOTAL_STAKE
+# ---------------------------------------------------------------------------
+def test_m3_storage_upgrade_respects_stake_caps():
+    node = _node()
+    w = QuantumWallet()
+    _fund(node, w.address)
+    # 注册存储节点
+    _apply(node, _signed_tx(w, "nova:storage:register", capacity_gb=100))
+    # 已质押到 MAX_STAKE 时，升级被拒绝（校验层）
+    node.store.stakes[w.address] = node.economy.MAX_STAKE
+    assert not node.validate_tx(_signed_tx(w, "nova:storage:inc:upgrade", amount=1.0))
+    # 模块级纵深防御：单地址超上限时 upgrade_quota 返回 0
+    node.store.stakes[w.address] = node.economy.MAX_STAKE - 1
+    node.balances[w.address] = 1000000.0
+    assert node.storage_incentive.upgrade_quota(w.address, 100.0) == 0.0
+    # 正常升级仍可用（未超限）
+    node.store.stakes[w.address] = 100.0
+    added = node.storage_incentive.upgrade_quota(w.address, 50.0)
+    assert added > 0.0
+    assert node.store.stakes[w.address] == pytest.approx(150.0)
+
+
+# ---------------------------------------------------------------------------
+# M-5: 成就颁发必须由创建者（issuer）执行
+# ---------------------------------------------------------------------------
+def test_m5_achievement_award_requires_issuer():
+    node = _node()
+    issuer, other, target = QuantumWallet(), QuantumWallet(), QuantumWallet()
+    for w in (issuer, other, target):
+        _fund(node, w.address)
+    _apply(node, _signed_tx(issuer, "nova:ach:issue", title="签到365", desc="d", badge="🔥"))
+    aid = next(iter(node.store.achievements))
+    # 非创建者不能颁发（修复前任意地址可颁给自己刷声誉分）
+    assert not node.validate_tx(_signed_tx(other, "nova:ach:award", aid=aid, target=target.address))
+    # 创建者可颁发
+    _apply(node, _signed_tx(issuer, "nova:ach:award", aid=aid, target=target.address))
+    assert target.address in node.store.soulbound[aid]
+
+
+# ---------------------------------------------------------------------------
+# M-7: 内容自动固定应用每地址上限（防无限抽干生态基金）
+# ---------------------------------------------------------------------------
+def test_m7_content_pin_respects_per_addr_cap():
+    from core.storage_network import MAX_PINS_PER_ADDR
+    node = _node()
+    w = QuantumWallet()
+    _fund(node, w.address)
+    _fund_eco(node)
+    for i in range(MAX_PINS_PER_ADDR):
+        node.store.storage_claims[f"0x{i:064x}"] = {"owner": w.address}
+    cid = "0x" + "f" * 64
+    assert node.socialfi._pin_content(w.address, cid, 1.0, 30) is False
+
+
+# ---------------------------------------------------------------------------
+# M-14: 普通转账扣费与校验一致（高信誉折扣不产生负余额）
+# ---------------------------------------------------------------------------
+def test_m14_normal_transfer_fee_matches_validation():
+    node = _node()
+    high_rep, receiver = QuantumWallet(), QuantumWallet()
+    # 构造高信誉（>=80）发送者
+    node.store.light_checkins[high_rep.address] = 270
+    node.store.stakes[high_rep.address] = 1000
+    for i in range(3):
+        node.store.contract_creator["0x" + ("c%d" % i * 20)] = high_rep.address
+    for i in range(2):
+        node.store.referrals["0x" + ("r%d" % i * 20)] = high_rep.address
+    node.store.text_reputation[high_rep.address] = 500
+    rep = node.socialfi.reputation(high_rep.address)
+    assert rep["score"] >= 80, rep
+    gas_of = node.gas_of(high_rep.address)
+    assert gas_of < node.economy.FIXED_GAS
+    amount = 10.0
+    # 余额介于 amount+gas_of 与 amount+FIXED_GAS 之间：应通过校验且扣费后不为负
+    node.balances[high_rep.address] = amount + gas_of + 1e-6
+    node.balances[receiver.address] = 0.0
+    ts = int(time.time())
+    tx = Tx(high_rep.address, receiver.address, amount, [], "",
+            high_rep.public_key_hex(), "", timestamp=ts)
+    tx.signature = high_rep.sign(tx.signing_data())
+    assert node.validate_tx(tx)
+    node.apply_tx(tx)
+    assert node.balances[high_rep.address] >= 0.0
+    assert node.balances[receiver.address] == pytest.approx(amount)
+
+
+# ---------------------------------------------------------------------------
+# M-2: 算力争议投票排除利益相关方（发起者 / 已获报酬工人）
+# ---------------------------------------------------------------------------
+def test_m2_compute_dispute_vote_excludes_stakeholders():
+    node = _node()
+    creator, w1, w2 = QuantumWallet(), QuantumWallet(), QuantumWallet()
+    for w in (creator, w1, w2):
+        _fund(node, w.address)
+    for w in (w1, w2):
+        _register_node(node, w)
+        _stake_node(node, w)
+    _apply(node, _signed_tx(creator, "nova:compute:publish", amount=20.0,
+                            spec="超分", task_type="ai_image", mode="grab", expires_in=3600))
+    tid = next(iter(node.store.compute_tasks))
+    _apply(node, _signed_tx(w1, "nova:compute:accept", task_id=tid))
+    _apply(node, _signed_tx(w2, "nova:compute:accept", task_id=tid))
+    r = "dd" * 32
+    _apply(node, _signed_tx(w1, "nova:compute:submit", task_id=tid, result_hash=r))
+    _apply(node, _signed_tx(w2, "nova:compute:submit", task_id=tid, result_hash=r))
+    _apply(node, _signed_tx(creator, "nova:compute:dispute", task_id=tid, reason="复查"))
+    # 利益相关方（发起者 / 已获报酬的工人）不得投票
+    assert not node.validate_tx(_signed_tx(creator, "nova:compute:vote", task_id=tid, support="dismiss"))
+    assert not node.validate_tx(_signed_tx(w1, "nova:compute:vote", task_id=tid, support="dismiss"))
+    assert not node.validate_tx(_signed_tx(w2, "nova:compute:vote", task_id=tid, support="dismiss"))
+    # 独立验证者可投票
+    v = QuantumWallet()
+    _fund(node, v.address)
+    _stake_validator(node, v, 1000)
+    assert node.validate_tx(_signed_tx(v, "nova:compute:vote", task_id=tid, support="dismiss"))
+
+
+# ---------------------------------------------------------------------------
+# M-4: 存储激励奖励按「证明时点」assigned_gb 快照计酬（防先证明后认领虚增）
+# ---------------------------------------------------------------------------
+def test_m4_inc_reward_uses_proof_time_snapshot():
+    node = _node()
+    n1 = QuantumWallet()
+    _fund(node, n1.address)
+    _fund_eco(node)
+    node.storage_incentive.auto_register(n1.address, 100.0)
+    node.store.inc_nodes[n1.address]["assigned_gb"] = 100.0   # 结算前被虚增到 100GB
+    node.store.inc_nodes[n1.address]["proof_assigned_gb"] = 10.0  # 证明时点只有 10GB
+    reward = node.storage_incentive.daily_reward(node.store.inc_nodes[n1.address])
+    assert reward == pytest.approx(10.0 * 1.0 / 30.0)  # 按快照 10GB，而非 100GB
+
+
+# ---------------------------------------------------------------------------
+# M-6: 预测市场 oracle / 创建者不得自我下注（防内幕套利）
+# ---------------------------------------------------------------------------
+def test_m6_market_oracle_and_creator_cannot_bet():
+    node = _node()
+    creator, oracle, alice = QuantumWallet(), QuantumWallet(), QuantumWallet()
+    for w in (creator, oracle, alice):
+        _fund(node, w.address)
+    _apply(node, _signed_tx(creator, "nova:market:create", question="Q?",
+                            options=["a", "b"], closes_in=3600, oracle=oracle.address))
+    mid = next(iter(node.store.markets))
+    assert not node.validate_tx(_signed_tx(oracle, "nova:market:bet", amount=10, mid=mid, option=0))
+    assert not node.validate_tx(_signed_tx(creator, "nova:market:bet", amount=10, mid=mid, option=0))
+    _apply(node, _signed_tx(alice, "nova:market:bet", amount=10, mid=mid, option=0))
+
+
+# ---------------------------------------------------------------------------
+# M-8: 文本合约密钥由稳定种子派生（不再依赖易变余额状态）
+# ---------------------------------------------------------------------------
+def test_m8_text_key_stable_across_balance_state():
+    n1, n2 = _node(), _node()
+    # 两个节点余额状态不同（n2 额外注入两笔余额），但文本合约公钥必须一致
+    n2.balances["0x" + "a" * 40] = 12345.0
+    n2.balances["0x" + "b" * 40] = 67890.0
+    pk1 = n1.socialfi.text_contract_pubkey()
+    pk2 = n2.socialfi.text_contract_pubkey()
+    assert pk1 == pk2
+    assert pk1.startswith("04")  # P-256 未压缩公钥
+
+
+# ---------------------------------------------------------------------------
+# M-9: 仲裁翻案资金守恒（追回金额按二次结果重新入账，不再蒸发）
+# ---------------------------------------------------------------------------
+def test_m9_arb_revert_conserves_funds():
+    node = _node()
+    buyer, seller = QuantumWallet(), QuantumWallet()
+    _fund(node, buyer.address, 10000.0)
+    _fund(node, seller.address, 10000.0)
+    _fund_eco(node)
+    # 首次卖家胜已执行：卖家收到冻结 20 + 投诉保证金 40% 份额 8，生态基金收 60% 份额 12
+    case = {
+        "id": "case_t1", "buyer": buyer.address, "seller": seller.address,
+        "result": "seller", "seller_frozen": 20.0,
+        "payouts": {"first_seller": {"to_seller_frozen": 20.0, "to_seller_share": 8.0, "to_eco": 12.0}},
+    }
+    node.balances[seller.address] += 20.0 + 8.0
+    node.balances[node.economy.ECOSYSTEM_FUND] += 12.0
+    before_total = sum(node.balances.values()) + sum(node.store.arb_pools.values())
+    # 二次仲裁翻案为买家胜
+    node.arbitration._revert_and_repay(case, "buyer")
+    after_total = sum(node.balances.values()) + sum(node.store.arb_pools.values())
+    # 资金守恒：翻案前后总量一致（修复前卖家份额被追回后从未入账 → 蒸发）
+    assert after_total == pytest.approx(before_total)
+    # 买家拿回冻结保证金 + 卖家此前分得的投诉保证金份额
+    assert node.balances[buyer.address] == pytest.approx(10000.0 + 20.0 + 8.0)
+
+
+# ---------------------------------------------------------------------------
+# M-11: 存储维护类 op 每地址每类每日限频 + 仅存储节点可触发
+# ---------------------------------------------------------------------------
+def test_m11_inc_maintain_op_daily_limit():
+    node = _node()
+    w, other = QuantumWallet(), QuantumWallet()
+    _fund(node, w.address)
+    _fund(node, other.address)
+    _apply(node, _signed_tx(w, "nova:storage:register", capacity_gb=100))
+    # 首次触发允许
+    assert node.validate_tx(_signed_tx(w, "nova:storage:inc:settle"))
+    _apply(node, _signed_tx(w, "nova:storage:inc:settle"))
+    # 同日再次触发被拒（每地址每类每日一次）
+    assert not node.validate_tx(_signed_tx(w, "nova:storage:inc:settle"))
+    # 非存储节点不能触发
+    assert not node.validate_tx(_signed_tx(other, "nova:storage:inc:settle"))

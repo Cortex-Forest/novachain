@@ -51,7 +51,8 @@ EVENT_LIMIT = 500                      # 链上事件保留上限
 
 
 def month_key(ts: float = None) -> str:
-    return time.strftime("%Y-%m", time.localtime(ts if ts is not None else time.time()))
+    # UTC 月份键（审计：统一 UTC，避免跨时区节点月度收益窗口不一致）
+    return time.strftime("%Y-%m", time.gmtime(ts if ts is not None else time.time()))
 
 
 class StorageIncentive:
@@ -304,6 +305,9 @@ class StorageIncentive:
         node["last_heartbeat"] = time.time()
         node["online"] = True
         node["fail_epoch"] = 0
+        # 审计 M-4：记录证明时点的 assigned_gb 快照，结算按此计酬，
+        # 防止「先证明 3 个文件、结算前再批量认领虚增奖励」。
+        node["proof_assigned_gb"] = node.get("assigned_gb", 0.0)
         node["challenge_seq"] = node.get("challenge_seq", 0) + 1
         return {"ok": True, "reason": "ok", "assigned_gb": node.get("assigned_gb", 0.0)}
 
@@ -342,8 +346,12 @@ class StorageIncentive:
     # 奖励结算与惩罚
     # ======================================================================
     def daily_reward(self, node) -> float:
-        """每 GB 每月 1 NOVA → 每日 = size_gb * 1 / 30。"""
-        return round(node.get("assigned_gb", 0.0) * REWARD_PER_GB_PER_MONTH / DAYS_PER_MONTH, 8)
+        """每 GB 每月 1 NOVA → 每日 = size_gb * 1 / 30。
+
+        审计 M-4：按证明时点的 assigned_gb 快照（proof_assigned_gb）计酬，
+        而非结算时刻的 assigned_gb，防止结算前批量认领虚增奖励。"""
+        return round(node.get("proof_assigned_gb", node.get("assigned_gb", 0.0))
+                     * REWARD_PER_GB_PER_MONTH / DAYS_PER_MONTH, 8)
 
     def settle_epoch(self, day: int = None) -> dict:
         """每 24 小时结算一次：
@@ -507,6 +515,11 @@ class StorageIncentive:
         """节点质押更多 NOVA 升级配额：质押增加 amount，配额增加 amount * QUOTA_PER_STAKE_GB。"""
         node = self.store.inc_nodes.get(addr)
         if not node or amount <= 0:
+            return 0.0
+        # 审计 M-3：模块级纵深防御——同样受单地址 / 全网质押上限约束（防止绕过 nova:stake 限额）
+        if self.store.stakes.get(addr, 0.0) + amount > self.economy.MAX_STAKE:
+            return 0.0
+        if sum(self.store.stakes.values()) + amount > self.economy.MAX_TOTAL_STAKE:
             return 0.0
         self.store.balances[addr] = self.store.balances.get(addr, 0) - amount
         self.store.stakes[addr] = self.store.stakes.get(addr, 0.0) + amount

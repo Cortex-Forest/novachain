@@ -576,13 +576,27 @@ class NovaNode:
         if op == "nova:storage:inc:upgrade":
             if tx.sender not in self.store.inc_nodes:
                 return False
-            return (isinstance(tx.amount, (int, float)) and not isinstance(tx.amount, bool)
-                    and math.isfinite(tx.amount) and tx.amount > 0)
+            if not (isinstance(tx.amount, (int, float)) and not isinstance(tx.amount, bool)
+                    and math.isfinite(tx.amount) and tx.amount > 0):
+                return False
+            # 审计 M-3：存储质押升级同样受单地址 / 全网质押上限约束（防绕过 nova:stake 限额抬高出块权重）
+            if self.store.stakes.get(tx.sender, 0) + tx.amount > self.economy.MAX_STAKE:
+                return False
+            if sum(self.store.stakes.values()) + tx.amount > self.economy.MAX_TOTAL_STAKE:
+                return False
+            return True
         if op == "nova:storage:inc:exit":
             node = self.store.inc_nodes.get(tx.sender)
             return tx.amount == 0 and bool(node) and not node.get("exit_at")
         if op in ("nova:storage:inc:settle", "nova:storage:inc:protect", "nova:storage:inc:reassign"):
-            return tx.amount == 0
+            if tx.amount != 0:
+                return False
+            # 审计 M-11：维护类 op 仅存储节点可触发，且每地址每类每日一次（防无限 O(n) 全表扫描）
+            if tx.sender not in self.store.inc_nodes:
+                return False
+            day = time.strftime("%Y-%m-%d", time.gmtime())
+            key = f"{tx.sender}|{op}|{day}"
+            return key not in self.store.inc_maintain_keys
         if op == "nova:storage:inc:access":
             return tx.amount == 0 and CID_RE.match(d.get("cid", "")) and d.get("cid") in self.store.inc_files
         if op == "nova:storage:inc:reupload":
@@ -623,16 +637,24 @@ class NovaNode:
         elif op == "nova:storage:inc:settle":
             # 结算上一个完整周期（与每日维护一致），避免提前惩罚当日未证明节点
             self.storage_incentive.settle_epoch(day_index() - 1)
+            self._record_inc_maintain(addr, op)
         elif op == "nova:storage:inc:protect":
             self.storage_incentive.protect_hot_files()
+            self._record_inc_maintain(addr, op)
         elif op == "nova:storage:inc:reassign":
             self.storage_incentive.reassign_endangered()
+            self._record_inc_maintain(addr, op)
         elif op == "nova:storage:inc:access":
             self.storage_incentive.record_access(d["cid"])
         elif op == "nova:storage:inc:reupload":
             self.storage_incentive.file_reupload(addr, d["old_cid"], d["new_cid"],
                                                  d["size_gb"], d["fragment_commit"],
                                                  d.get("title", ""))
+
+    def _record_inc_maintain(self, addr, op):
+        """记录维护类 op 已触发（每地址每类每日一次，审计 M-11）。"""
+        day = time.strftime("%Y-%m-%d", time.gmtime())
+        self.store.inc_maintain_keys.add(f"{addr}|{op}|{day}")
 
     def _apply_compute_op(self, tx):
         addr = tx.sender
@@ -676,9 +698,15 @@ class NovaNode:
 
     def _apply_ai_op(self, tx):
         addr = tx.sender
-        self.balances[addr] = self.balances.get(addr, 0) - self.gas_of(addr)
         d = json.loads(tx.data)
         op = d.get("op")
+        # 审计修复 H-1：nova:ai:work:buy / nova:ai:trigger 的金额必须从发起者余额扣除
+        # （此前只扣 gas，导致购买/触发金额凭空铸造）。
+        # 其余 AI op 仅扣 gas；fund:spend 的金额由 AI 成长基金合约余额支付，不从个人余额扣。
+        if op in ("nova:ai:work:buy", "nova:ai:trigger"):
+            self.balances[addr] = self.balances.get(addr, 0) - (tx.amount + self.gas_of(addr))
+        else:
+            self.balances[addr] = self.balances.get(addr, 0) - self.gas_of(addr)
         if op == "nova:ai:svc:register":
             self.ai_service.svc_register(addr, tx.txid, d)
         elif op == "nova:ai:svc:config":
@@ -768,7 +796,7 @@ class NovaNode:
               or self._is_sub_op(tx)):
             gas = self.gas_of(tx.sender)
         else:
-            gas = self.economy.FIXED_GAS
+            gas = self.gas_of(tx.sender)  # 审计 M-14：与 apply_tx 实际扣费一致
         self.store.tx_history[tx.txid] = {
             "txid": tx.txid,
             "sender": tx.sender,
@@ -858,7 +886,9 @@ class NovaNode:
             self._apply_sub_op(tx)
             return
         old_balance = self.balances.get(tx.receiver, 0)
-        self.balances[tx.sender] = self.balances.get(tx.sender, 0) - (tx.amount + self.economy.FIXED_GAS)
+        # 审计 M-14：扣费与 validate_tx 一致（gas_of 含信誉折扣），避免高信誉地址余额被扣为负
+        gas = self.gas_of(tx.sender)
+        self.balances[tx.sender] = self.balances.get(tx.sender, 0) - (tx.amount + gas)
         self.balances[tx.receiver] = old_balance + tx.amount
 
         reward = self.economy.block_reward() + self.economy.FIXED_GAS
@@ -873,7 +903,7 @@ class NovaNode:
         if tx.receiver in self.contracts and tx.sender != "0x0000":
             creator = self.store.contract_creator.get(tx.receiver)
             cr = self.economy.call_reward()
-            today = time.strftime("%Y-%m-%d")
+            today = time.strftime("%Y-%m-%d", time.gmtime())
             reward_key = f"{tx.sender}:{tx.receiver}"
             if (creator and self.balances.get(self.economy.ECOSYSTEM_FUND, 0) >= cr
                     and self.store.call_reward_dates.get(reward_key) != today):
@@ -998,7 +1028,7 @@ class NovaNode:
         last_day = None
         while True:
             await asyncio.sleep(3600)
-            today = time.strftime("%Y-%m-%d")
+            today = time.strftime("%Y-%m-%d", time.gmtime())
             if today == last_day:
                 continue
             last_day = today
@@ -1294,7 +1324,7 @@ class NovaNode:
         addr, txid = b["addr"], b["txid"]
         if txid not in self.dag: return web.json_response({"error":"交易不存在"}, status=400)
         if txid in self.store.verified_txids: return web.json_response({"error":"该交易已验证过"}, status=400)
-        today = time.strftime("%Y-%m-%d")
+        today = time.strftime("%Y-%m-%d", time.gmtime())
         if self.store.light_verify_last.get(addr) == today:
             return web.json_response({"error":"今日已领取验证奖励"}, status=400)
         rwd = self.economy.light_verify_reward()
@@ -1350,7 +1380,7 @@ class NovaNode:
         if not self.security.check_checkin_interval(addr):
             return web.json_response({"error":"签到间隔需≥20小时"}, status=400)
 
-        today = time.strftime("%Y-%m-%d")
+        today = time.strftime("%Y-%m-%d", time.gmtime())
         if addr not in self.store.light_checkin_dates:
             self.store.light_checkin_dates[addr] = set()
         if today in self.store.light_checkin_dates[addr]:
@@ -2429,7 +2459,7 @@ class NovaNode:
         """GET /api/faucet/status：水龙头余额 / 今日发放 / 限频参数。"""
         guard = await self._rpc_guard(req)
         if guard: return guard
-        today = time.strftime("%Y-%m-%d")
+        today = time.strftime("%Y-%m-%d", time.gmtime())
         daily = self.store.faucet_daily.get(today, {"count": 0, "amount": 0.0, "ips": {}})
         return web.json_response({
             "enabled": self.faucet_enabled,
@@ -2462,7 +2492,7 @@ class NovaNode:
 
         ip = req.remote
         now = time.time()
-        today = time.strftime("%Y-%m-%d")
+        today = time.strftime("%Y-%m-%d", time.gmtime())
 
         # 地址冷却：24 小时限领 1 次
         claim = self.store.faucet_claims.get(addr, {})

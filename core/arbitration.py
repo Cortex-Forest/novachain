@@ -85,6 +85,8 @@ ARB_MALICIOUS_WINDOW_DAYS = 30   # 恶意投诉统计窗口：30 天
 ARB_MALICIOUS_LOCK_DAYS = 30     # 连续恶意投诉 5 次：限制密文交易 30 天
 ARB_MALICIOUS_LOCK_COUNT = 5     # 连续恶意投诉阈值
 ARB_CHARGE_DEPOSIT = 2.0         # 检举仲裁员保证金：2 NOVA
+ARB_CHARGE_CONFIRM_MIN = 2       # 审计修复 H-4：确认可疑需 ≥2 名独立检举人，防单人 2 NOVA 免费罚没
+ARB_CHARGE_MIN_POWER = 100.0     # 审计修复 H-4：检举人最低权益（质押+余额），防 Sybil 刷确认
 ARB_REASON_MAX = 2000            # 投诉理由长度上限
 ARB_EVIDENCE_MAX = 300           # 证据 CID 长度上限
 ARB_TRADE_ID_MAX = 128           # 交易 ID 长度上限
@@ -1106,8 +1108,9 @@ class Arbitration:
     def _revert_and_repay(self, case, winner2):
         """推翻一次裁决：回滚首次赔付并按二次结果重新执行。
 
-        优先从首次受益方追回（余额不足部分由生态基金兜底），
-        保证链上账务最终一致。"""
+        优先从首次受益方追回（余额不足部分由生态基金兜底）。
+        审计 M-9：追回的资金（claw）必须按二次结果重新入账——
+        此前被追回后从未入账，导致每次翻案都造成资金凭空消失。"""
         buyer, seller = case["buyer"], case["seller"]
         first_winner = case.get("result", "")
         received = 0.0
@@ -1129,18 +1132,32 @@ class Arbitration:
                 claw = _amt(claw + eco_cover)
             pool_key = f"case_{case['id']}"
             pool = float(self.store.arb_pools.get(pool_key, 0.0))
-            # 追回资金 + 二次保证金池 -> 按二次结果重新赔付
+            frozen = float(case.get("seller_frozen", 0.0))
+            # 追回资金（claw）按二次结果重新分配，保证链上账务守恒
             if winner2 == "buyer":
-                frozen = float(case.get("seller_frozen", 0.0))
+                # 首次卖家胜：追回的（frozen + 卖家分得的投诉保证金）归还买家
                 self.store.balances[buyer] = _amt(self.store.balances.get(buyer, 0.0) + frozen)
+                refund = _amt(max(0.0, claw - frozen))
+                if refund > 0:
+                    self.store.balances[buyer] = _amt(self.store.balances.get(buyer, 0.0) + refund)
+                # 二次保证金池剩余归买家（原逻辑）
                 remain = _amt(pool)
                 if remain > 0:
                     self.store.balances[buyer] = _amt(self.store.balances.get(buyer, 0.0) + remain)
                     self.store.arb_pools.pop(pool_key, None)
-                case["payouts"]["second_buyer"] = {"to_buyer_frozen": frozen, "to_buyer_pool": remain}
+                case["payouts"]["second_buyer"] = {"to_buyer_frozen": frozen,
+                                                   "to_buyer_claw_refund": refund,
+                                                   "to_buyer_pool": remain}
             else:
-                frozen = float(case.get("seller_frozen", 0.0))
+                # 首次买家胜：追回的（frozen + 买家拿回的投诉保证金）按卖家胜诉规则 40/60 分配
                 self.store.balances[seller] = _amt(self.store.balances.get(seller, 0.0) + frozen)
+                refund = _amt(max(0.0, claw - frozen))
+                if refund > 0:
+                    seller_share = _amt(refund * ARB_SELLER_WIN_RATIO)
+                    eco_share = _amt(refund - seller_share)
+                    self.store.balances[seller] = _amt(self.store.balances.get(seller, 0.0) + seller_share)
+                    self.store.balances[self.economy.ECOSYSTEM_FUND] = _amt(self._eco_balance() + eco_share)
+                # 二次保证金池剩余同样按 40/60 分配（原逻辑）
                 remain = _amt(pool)
                 if remain > 0:
                     seller_share = _amt(remain * ARB_SELLER_WIN_RATIO)
@@ -1148,7 +1165,9 @@ class Arbitration:
                     self.store.balances[seller] = _amt(self.store.balances.get(seller, 0.0) + seller_share)
                     self.store.balances[self.economy.ECOSYSTEM_FUND] = _amt(self._eco_balance() + eco_share)
                     self.store.arb_pools.pop(pool_key, None)
-                case["payouts"]["second_seller"] = {"to_seller_frozen": frozen, "to_seller_share": remain}
+                case["payouts"]["second_seller"] = {"to_seller_frozen": frozen,
+                                                    "to_seller_claw_share": refund,
+                                                    "to_seller_pool_share": remain}
         else:
             # 首次未执行赔付（理论上不会发生），直接按二次结果走标准赔付
             self._payout(case, winner2)
@@ -1175,6 +1194,10 @@ class Arbitration:
             return False
         if target == addr or target not in self.store.arb_arbitrators:
             return False
+        # 审计 H-4：检举人须为有质押/资产的社区成员，防 Sybil 刷独立检举人确认
+        power = float(self.store.stakes.get(addr, 0.0)) + float(self.store.balances.get(addr, 0.0))
+        if power < ARB_CHARGE_MIN_POWER:
+            return False
         if kind == "collude":
             case = self.store.arb_cases.get(cid)
             if not case or target not in self._panel_members(case):
@@ -1182,17 +1205,13 @@ class Arbitration:
         ev = str(d.get("evidence", "") or "")
         return len(ev) <= ARB_EVIDENCE_MAX
 
-    def charge_apply(self, tx, d):
-        addr = tx.sender
-        target = str(d.get("target", ""))
-        kind = str(d.get("kind", ""))
-        cid = str(d.get("case_id", "") or "")
-        evidence = str(d.get("evidence", "") or "")
-        ar = self.store.arb_arbitrators[target]
-        now = time.time()
-        suspicious = target in self.store.arb_suspicious
-        if suspicious and kind == "bribe":
-            # 受贿/明显偏袒（已标记可疑）：罚没全部质押，永久取消资格
+    def _charge_slash(self, addr, target, kind, cid) -> bool:
+        """确认可疑后的检举成立：罚没质押 + 封禁 + 退还检举押金。返回 True 表示已处理。"""
+        ar = self.store.arb_arbitrators.get(target)
+        if not ar:
+            return False
+        if kind == "bribe":
+            # 受贿/明显偏袒：罚没全部质押，永久取消资格
             stake = float(ar.get("stake", 0.0))
             if stake > 0:
                 self.store.balances[self.economy.ECOSYSTEM_FUND] = _amt(self._eco_balance() + stake)
@@ -1204,43 +1223,72 @@ class Arbitration:
             self.store.balances[addr] = _amt(self.store.balances.get(addr, 0.0) + ARB_CHARGE_DEPOSIT)
             self._event("charge", "检举成立：罚没仲裁员质押",
                         f"{target[:12]}... 因受贿/偏袒被罚没全部质押并永久取消资格。", cid)
-            return
-        if suspicious and kind == "collude":
+            return True
+        if kind == "collude":
             case = self.store.arb_cases.get(cid)
             sec = case and case.get("second")
             overturn = bool(sec and sec.get("result") and case.get("result")
                             and sec["result"] != case["result"])
-            if overturn:
-                # 与当事人串通：罚没质押，赔偿受害者损失
-                stake = float(ar.get("stake", 0.0))
-                victim = case["seller"] if ar.get("recent_votes", []) else case["buyer"]
-                # 受害者：一次裁决中该仲裁员投票所反对的一方
-                for a2 in case.get("panel", {}).values():
-                    if a2 == target and case["panel_meta"].get(a2, {}).get("side"):
-                        voted_side = case["panel_meta"][a2]["side"]
-                        victim = case["seller"] if voted_side == "buyer" else case["buyer"]
-                        break
-                if stake > 0:
-                    half = _amt(stake / 2.0)
-                    self.store.balances[victim] = _amt(self.store.balances.get(victim, 0.0) + half)
-                    self.store.balances[self.economy.ECOSYSTEM_FUND] = _amt(self._eco_balance() + stake - half)
-                    self.store.arb_slashed = _amt(self.store.arb_slashed + stake)
-                    ar["stake"] = 0.0
-                self._rep_delta(target, -ARB_REP_MAX, "与当事人串通")
-                self._ban(target, "与当事人串通")
-                self.store.arb_suspicious.pop(target, None)
-                self.store.balances[addr] = _amt(self.store.balances.get(addr, 0.0) + ARB_CHARGE_DEPOSIT)
-                self._event("charge", "检举成立：串通罚没",
-                            f"{target[:12]}... 因与当事人串通被罚没质押并赔偿受害者。", cid)
+            if not overturn:
+                return False
+            # 与当事人串通：罚没质押，赔偿受害者损失
+            stake = float(ar.get("stake", 0.0))
+            victim = case["seller"] if ar.get("recent_votes", []) else case["buyer"]
+            for a2 in case.get("panel", {}).values():
+                if a2 == target and case["panel_meta"].get(a2, {}).get("side"):
+                    voted_side = case["panel_meta"][a2]["side"]
+                    victim = case["seller"] if voted_side == "buyer" else case["buyer"]
+                    break
+            if stake > 0:
+                half = _amt(stake / 2.0)
+                self.store.balances[victim] = _amt(self.store.balances.get(victim, 0.0) + half)
+                self.store.balances[self.economy.ECOSYSTEM_FUND] = _amt(self._eco_balance() + stake - half)
+                self.store.arb_slashed = _amt(self.store.arb_slashed + stake)
+                ar["stake"] = 0.0
+            self._rep_delta(target, -ARB_REP_MAX, "与当事人串通")
+            self._ban(target, "与当事人串通")
+            self.store.arb_suspicious.pop(target, None)
+            self.store.balances[addr] = _amt(self.store.balances.get(addr, 0.0) + ARB_CHARGE_DEPOSIT)
+            self._event("charge", "检举成立：串通罚没",
+                        f"{target[:12]}... 因与当事人串通被罚没质押并赔偿受害者。", cid)
+            return True
+        return False
+
+    def charge_apply(self, tx, d):
+        addr = tx.sender
+        target = str(d.get("target", ""))
+        kind = str(d.get("kind", ""))
+        cid = str(d.get("case_id", "") or "")
+        evidence = str(d.get("evidence", "") or "")
+        ar = self.store.arb_arbitrators[target]
+        now = time.time()
+        # 审计修复 H-4：仅「已确认」可疑（≥2 名独立检举人）才可触发罚没；
+        # 单人单次检举只能将目标置入观察期，杜绝「2 NOVA 免费罚没他人 500 质押」。
+        sus = self.store.arb_suspicious.get(target)
+        if sus and sus.get("confirmed"):
+            if self._charge_slash(addr, target, kind, cid):
                 return
-        # 证据不足：目标进入 7 天观察期，信誉分 -5
+        # 证据不足：目标进入 7 天观察期，信誉分 -5；
+        # 累计 ≥2 名独立检举人后确认可疑（confirmed=True），且本次检举立即生效（审计 H-4）。
         ar["status"] = "observing"
         ar["observe_until"] = now + ARB_OBSERVE_DAYS * 86400
         self._rep_delta(target, -5.0, "检举观察")
+        prev = sus or {}
+        chargers = list(prev.get("chargers", []))
+        if addr not in chargers:
+            chargers.append(addr)
+        confirmed = bool(prev.get("confirmed")) or len(chargers) >= ARB_CHARGE_CONFIRM_MIN
         self.store.arb_suspicious[target] = {
             "reason": f"{kind} 检举（证据：{evidence[:40] or '无'}）",
-            "marked_at": now, "observe_until": now + ARB_OBSERVE_DAYS * 86400,
+            "marked_at": prev.get("marked_at", now),
+            "observe_until": now + ARB_OBSERVE_DAYS * 86400,
+            "confirmed": confirmed,
+            "chargers": chargers,
         }
+        if confirmed:
+            # 本次检举恰好达到确认阈值 → 立即视为检举成立
+            if self._charge_slash(addr, target, kind, cid):
+                return
         self._notify(target, "arb_suspect", "已被标记可疑",
                      "进入 7 天观察期，期间暂停抽取。请配合调查。", cid)
         self._event("charge", "仲裁员进入观察期",
@@ -1432,9 +1480,12 @@ class Arbitration:
             return False
         ar["status"] = "observing"
         ar["observe_until"] = time.time() + ARB_OBSERVE_DAYS * 86400
+        # 审计 H-4：自动统计标记默认未确认（confirmed=False），
+        # 必须由 ≥2 名独立检举人确认后才可被检举罚没，避免统计误报被滥用。
         self.store.arb_suspicious[addr] = {
             "reason": reason, "marked_at": time.time(),
             "observe_until": ar["observe_until"],
+            "confirmed": False, "chargers": [],
         }
         self._notify(addr, "arb_suspect", "已被标记可疑",
                      f"{reason}。暂停抽取，进入 7 天观察期。", "")

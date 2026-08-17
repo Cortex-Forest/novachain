@@ -59,7 +59,7 @@ def _asset(node, node_w, symbol="nUSDT"):
 
 
 def _day():
-    return time.strftime("%Y-%m-%d")
+    return time.strftime("%Y-%m-%d", time.gmtime())
 
 
 # ---------------------------------------------------------------------------

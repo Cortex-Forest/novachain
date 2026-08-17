@@ -429,7 +429,7 @@ def test_random_audit_slash_double_stake():
     t0 = time.time()
     found = None
     for i in range(5000):
-        day = time.strftime("%Y-%m-%d", time.localtime(t0 + i * 86400))
+        day = time.strftime("%Y-%m-%d", time.gmtime(t0 + i * 86400))
         if node.compute_market._audit_roll(tid, day) < int(5):
             found = t0 + i * 86400
             break
@@ -455,7 +455,7 @@ def test_random_audit_slash_double_stake():
     _apply(node, _signed_tx(w5, "nova:compute:submit", task_id=tid2, result_hash=result2))
     found2 = None
     for i in range(5000):
-        day = time.strftime("%Y-%m-%d", time.localtime(t0 + i * 86400))
+        day = time.strftime("%Y-%m-%d", time.gmtime(t0 + i * 86400))
         if node.compute_market._audit_roll(tid2, day) < int(5):
             found2 = t0 + i * 86400
             break

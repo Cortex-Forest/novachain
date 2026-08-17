@@ -13,6 +13,9 @@ key.pem
 .cov.*
 
 .pytest_tmp/
+# 测试虚拟环境与缓存
+.venv-test/
+.pytest_cache/
 # Agent 运行时本地状态/审计（默认落盘名）
 agent_state.json
 agent_audit.jsonl

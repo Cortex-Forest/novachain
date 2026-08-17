@@ -586,13 +586,16 @@ class ComputeMarket:
 
     def dispute(self, by: str, tid: str, reason: str) -> dict:
         task = self.store.compute_tasks[tid]
-        # 预算冻结：回拨已结算报酬
+        # 预算冻结：回拨已结算报酬（记录每名工人实际回拨额 clawed，审计 M-1）
         frozen = 0.0
+        clawed = {}
         for w, share in task.get("shares", {}).items():
             claw = min(share, self.store.balances.get(w, 0.0))
             self.store.balances[w] = self.store.balances.get(w, 0.0) - claw
+            clawed[w] = round(claw, 8)
             frozen = round(frozen + claw, 8)
         task["frozen"] = frozen
+        task["clawed"] = clawed
         task["status"] = "disputed"
         self.store.compute_disputes[tid] = {
             "task_id": tid, "by": by, "reason": reason, "votes": {},
@@ -613,6 +616,9 @@ class ComputeMarket:
             return False, "投票选项无效"
         if voter in d["votes"]:
             return False, "已投过票"
+        # 审计 M-2：排除利益相关方（任务发起者与已获报酬的工人），防止自投自保/被回拨者投票
+        if voter == task.get("creator") or voter in task.get("paid_workers", []):
+            return False, "利益相关方不得参与争议投票"
         if not (voter in self.store.stakes or voter in self.store.miner_registry
                 or self.is_qualified_node(voter)):
             return False, "仅社区验证者（矿工/质押者/算力节点）可投票"
@@ -648,9 +654,10 @@ class ComputeMarket:
                 self._emit("task_dispute_resolved", task["creator"], tid, "",
                            "争议仲裁：发起者胜诉，节点罚没")
             else:
-                # 驳回异议：恢复支付
+                # 驳回异议：仅回补争议冻结时实际回拨的金额（clawed），
+                # 而非完整 share——防止工人在冻结窗口内转走资金后被重复入账（审计 M-1）
                 for w, share in task.get("shares", {}).items():
-                    self.store.balances[w] = self.store.balances.get(w, 0.0) + share
+                    self.store.balances[w] = self.store.balances.get(w, 0.0) + float(task.get("clawed", {}).get(w, 0.0))
                 task["status"] = "completed"
                 self._history(task, "completed", tid, "争议仲裁驳回，恢复结算")
                 self._emit("task_dispute_resolved", task["creator"], tid, "",
@@ -681,7 +688,8 @@ class ComputeMarket:
 
     def _run_audits(self, now: float = None):
         now = time.time() if now is None else now
-        day = time.strftime("%Y-%m-%d", time.localtime(now))
+        # UTC 自然日（审计：统一 UTC，避免跨时区节点抽查窗口不一致）
+        day = time.strftime("%Y-%m-%d", time.gmtime(now))
         n = 0
         for tid, task in list(self.store.compute_tasks.items()):
             if task.get("task_type") is None or task["status"] != "completed":

@@ -198,8 +198,11 @@ def test_blindbox_commit_reveal_open():
         {"name": "稀有", "weight": 5, "reward_type": "badge", "reward_cid": _cid(1)},
         {"name": "普通", "weight": 20, "reward_type": "nova", "reward_amount": 2},
     ]
-    _apply(node, _signed_tx(creator, "nova:blind:create", name="星际盲盒", price=10, commit=commit, tiers=tiers))
+    _apply(node, _signed_tx(creator, "nova:blind:create", name="星际盲盒", price=10,
+                            commit=commit, tiers=tiers, reserve=100.0))
     bid = next(iter(node.store.blindboxes))
+    # 储备金已从创建者余额预存
+    assert node.store.blindboxes[bid]["reserve"] == pytest.approx(100.0)
 
     # 未揭示不能开盒
     assert not node.validate_tx(_signed_tx(player, "nova:blind:open", amount=10, bid=bid, draws=1))

@@ -76,8 +76,8 @@ def _h(raw: str) -> str:
     return hashlib.sha3_256(raw.encode()).hexdigest()
 
 def _ai_day(ts=None) -> str:
-    """AI 预算窗口按自然日划分（与链上签到等一致）。"""
-    return time.strftime("%Y-%m-%d", time.localtime(ts if ts is not None else time.time()))
+    """AI 预算窗口按自然日划分（UTC，审计 M-13：避免跨时区节点判定不一致）。"""
+    return time.strftime("%Y-%m-%d", time.gmtime(ts if ts is not None else time.time()))
 
 
 class SocialFi:
@@ -101,6 +101,12 @@ class SocialFi:
         if not (isinstance(duration_days, (int, float)) and not isinstance(duration_days, bool)
                 and duration_days >= 1):
             duration_days = PIN_DURATION_DAYS
+        # 审计 M-7：应用每地址固定数量上限（与 nova:storage:pin 一致），
+        # 防止通过发帖/策展/文本发布携带唯一 CID 无限抽干生态基金
+        from core.storage_network import MAX_PINS_PER_ADDR
+        mine = [c for c in self.store.storage_claims.values() if c.get("owner") == addr]
+        if len(mine) >= MAX_PINS_PER_ADDR:
+            return False
         reward = self.storage_net.pin_reward(size_gb, duration_days)
         if self.store.balances.get(self.economy.ECOSYSTEM_FUND, 0) < reward:
             return False
@@ -279,8 +285,16 @@ class SocialFi:
         total = sum(float(v) for v in r["investors"].values())
         if total <= 0:
             return 0.0
-        share = _amt(float(r["pool"]) * float(r["investors"].get(addr, 0)) / total)
-        return share if share > 0 else 0.0
+        # 审计修复 H-2：按「累计注入版税 × 份额占比 − 已领取」计算应得，并封顶当前池子。
+        # 修复前按「当前池 × 占比」计算且不记录已领取，导致反复领取收敛到整池（抽干其他投资者）。
+        frac = float(r["investors"].get(addr, 0)) / total
+        pooled = float(r.get("total_pooled", r["pool"]))
+        fair = _amt(frac * pooled)
+        paid = float(r.get("paid", {}).get(addr, 0.0))
+        pending = _amt(fair - paid)
+        if pending <= 0:
+            return 0.0
+        return min(pending, _amt(float(r["pool"])))
 
     def _rev_apply(self, tx, d):
         addr = tx.sender
@@ -290,7 +304,8 @@ class SocialFi:
             rid = "rev_" + _h(f"{addr}{name}{tx.txid}")[:20]
             self.store.revenue_shares[rid] = {
                 "id": rid, "creator": addr, "name": name, "desc": d.get("desc", ""),
-                "investors": {}, "total_invested": 0.0, "pool": 0.0, "created_at": time.time(),
+                "investors": {}, "total_invested": 0.0, "pool": 0.0,
+                "total_pooled": 0.0, "paid": {}, "created_at": time.time(),
             }
             self._record(tx, op, rid, f"开设收益共享「{name}」")
         elif op == "nova:rev:invest":
@@ -305,6 +320,7 @@ class SocialFi:
             rid, amount = d["rid"], float(d["amount"])
             r = self.store.revenue_shares[rid]
             r["pool"] = _amt(r["pool"] + amount)
+            r["total_pooled"] = _amt(r.get("total_pooled", 0.0) + amount)
             self.store.balances[addr] = self.store.balances.get(addr, 0) - amount
             self._record(tx, op, rid, f"注入版税收益 {amount} NOVA")
         elif op == "nova:rev:claim":
@@ -313,6 +329,8 @@ class SocialFi:
             payout = self.pending_rev_claim(rid, addr)
             if payout > 0:
                 r["pool"] = _amt(r["pool"] - payout)
+                paid_map = r.setdefault("paid", {})
+                paid_map[addr] = _amt(paid_map.get(addr, 0.0) + payout)
                 self.store.balances[addr] = self.store.balances.get(addr, 0) + payout
                 self._record(tx, op, rid, f"领取收益分成 {payout} NOVA")
 
@@ -333,6 +351,9 @@ class SocialFi:
         if op == "nova:ach:award":
             aid, target = d.get("aid", ""), d.get("target", "")
             if tx.amount != 0 or aid not in self.store.achievements:
+                return False
+            # 审计 M-5：仅成就创建者（issuer）可颁发（此前任意地址可把已有成就颁给自己刷声誉分）
+            if self.store.achievements[aid]["issuer"] != tx.sender:
                 return False
             if not ADDRESS_RE.match(target) or target in self.store.soulbound.get(aid, {}):
                 return False
@@ -385,6 +406,9 @@ class SocialFi:
                 return False
             m = self.store.markets[mid]
             if m["settled"] or time.time() >= m["closes_at"]:
+                return False
+            # 审计 M-6：预言机 / 创建者不得自我下注（防内幕套利）
+            if addr == m["oracle"] or addr == m["creator"]:
                 return False
             if not (isinstance(option, int) and not isinstance(option, bool) and 0 <= option < len(m["options"])):
                 return False
@@ -454,6 +478,7 @@ class SocialFi:
         if op == "nova:blind:create":
             name, commit, tiers = d.get("name", ""), d.get("commit", ""), d.get("tiers", [])
             price = d.get("price", 0)
+            reserve = d.get("reserve", 0)
             if tx.amount != 0:
                 return False
             if not (isinstance(name, str) and 0 < len(name) <= NAME_MAX):
@@ -461,6 +486,12 @@ class SocialFi:
             if not HEX64_RE.match(commit):
                 return False
             if not (isinstance(price, (int, float)) and not isinstance(price, bool) and price >= FAN_MIN_PRICE):
+                return False
+            # 审计修复 H-3：nova 奖励必须由创建者预存储备金（reserve）支付，杜绝凭空铸币。
+            if not (isinstance(reserve, (int, float)) and not isinstance(reserve, bool)
+                    and math.isfinite(reserve) and reserve >= 0):
+                return False
+            if reserve > 0 and self.store.balances.get(tx.sender, 0) < reserve - 1e-9:
                 return False
             if not (isinstance(tiers, list) and 1 <= len(tiers) <= TIERS_MAX):
                 return False
@@ -478,6 +509,13 @@ class SocialFi:
                     return False
                 if t.get("reward_cid") and not CID_RE.match(t["reward_cid"]):
                     return False
+            # 审计修复 H-3：期望奖励（按权重加权）必须 ≤ 售价，防止开盒凭空铸币。
+            # EV = Σ(weight × reward) / Σ(weight)
+            total_w = sum(int(t["weight"]) for t in tiers)
+            ev = sum(float(t.get("reward_amount", 0)) * int(t["weight"])
+                     for t in tiers if t["reward_type"] == "nova") / total_w
+            if ev > price + 1e-9:
+                return False
             return True
         if op == "nova:blind:reveal":
             bid, seed = d.get("bid", ""), d.get("seed", "")
@@ -491,6 +529,9 @@ class SocialFi:
             if bid not in self.store.blindboxes or bid not in self.store.blind_reveals:
                 return False
             box = self.store.blindboxes[bid]
+            # 审计修复 H-3：创建者不得自开（防创建者自开套利铸造）
+            if tx.sender == box["creator"]:
+                return False
             if not (isinstance(draws, int) and not isinstance(draws, bool) and 1 <= draws <= BLIND_MAX_DRAWS):
                 return False
             price = _amt(float(box["price"]) * draws)
@@ -516,11 +557,15 @@ class SocialFi:
         if op == "nova:blind:create":
             name, commit = d["name"], d["commit"].lower()
             price, tiers = float(d["price"]), d["tiers"]
+            reserve = float(d.get("reserve", 0.0))
             bid = "box_" + _h(f"{addr}{name}{commit}{tx.txid}")[:20]
+            # 审计修复 H-3：创建者预存储备金，开盒奖励从中支付（不再凭空铸造）
+            if reserve > 0:
+                self.store.balances[addr] = self.store.balances.get(addr, 0) - reserve
             self.store.blindboxes[bid] = {
                 "id": bid, "creator": addr, "name": name, "price": price,
-                "commit": commit, "tiers": list(tiers), "created_at": time.time(),
-                "draws": {},
+                "commit": commit, "tiers": list(tiers), "reserve": reserve,
+                "created_at": time.time(), "draws": {},
             }
             self._record(tx, op, bid, f"上架盲盒「{name}」")
         elif op == "nova:blind:reveal":
@@ -540,8 +585,15 @@ class SocialFi:
                 tier = self.blind_draw(box, seed, addr, nonce + i)
                 if tier["reward_type"] == "nova":
                     rw = float(tier.get("reward_amount", 0))
-                    self.store.balances[addr] = self.store.balances.get(addr, 0) + rw
-                    won.append({"tier": tier["name"], "type": "nova", "amount": rw})
+                    # 审计修复 H-3：奖励从储备金支付（不足则少付/不付），绝不凭空铸造
+                    pay = min(rw, float(box.get("reserve", 0.0)))
+                    if pay > 0:
+                        box["reserve"] = round(float(box.get("reserve", 0.0)) - pay, 8)
+                        self.store.balances[addr] = self.store.balances.get(addr, 0) + pay
+                        won.append({"tier": tier["name"], "type": "nova", "amount": pay})
+                    else:
+                        won.append({"tier": tier["name"], "type": "nova",
+                                    "amount": 0.0, "out_of_reserve": True})
                 else:
                     aid = "ach_" + _h(f"{box['id']}{tier['name']}{addr}{nonce + i}")[:20]
                     self.store.achievements.setdefault(aid, {
@@ -912,8 +964,9 @@ class SocialFi:
         """Nova 文本合约公钥：作者用它锁定正文密钥（AES-256），
         购买后合约用私钥把密钥二次加密给买家。由创世状态确定性派生并持久化。"""
         if not self.store.text_contract_priv:
-            seed = hashlib.sha3_256(json.dumps(sorted(self.store.balances),
-                                               ensure_ascii=False).encode()).digest()
+            # 审计 M-8：改用稳定的协议级种子派生密钥，避免依赖易变的余额状态
+            # （此前用「当前全部余额」作 seed，节点状态稍有偏差即派生出不同密钥 → 密文跨节点不一致）
+            seed = hashlib.sha3_256(b"nova:text:contract:genesis-v1").digest()
             priv, _pub = text_gen_p256_keypair(b"nova:text:contract:" + seed)
             self.store.text_contract_priv = priv
         return text_p256_pub_from_priv(self.store.text_contract_priv)

@@ -502,20 +502,33 @@ def test_charge_bribe_slashing_and_ban():
     _fund_eco(node)
     target_w = _elect_many(node, 1)[0]
     target = target_w.address
-    # 目标已因异常投票被标记可疑
+    # 目标已因异常投票被标记可疑，但尚未被独立检举人确认（审计 H-4：未确认不可罚没）
     node.store.arb_suspicious[target] = {"reason": "测试", "marked_at": time.time(),
-                                         "observe_until": time.time() + 7 * DAY}
+                                         "observe_until": time.time() + 7 * DAY,
+                                         "confirmed": False, "chargers": []}
     node.store.arb_arbitrators[target]["status"] = "observing"
-    charger = QuantumWallet()
-    _fund(node, charger.address)
-    _apply(node, _signed_tx(charger, "nova:arb:charge", amount=2.0,
+    charger1 = QuantumWallet()
+    _fund(node, charger1.address)
+    # 单个检举人 → 仅进入观察期，不罚没、不封禁、押金不退还
+    _apply(node, _signed_tx(charger1, "nova:arb:charge", amount=2.0,
                             target=target, kind="bribe", evidence="0xbeef"))
     ar = node.store.arb_arbitrators[target]
-    # 罚没全部质押 + 永久取消资格 + 检举保证金退还
+    assert ar["stake"] > 0.0
+    assert ar["status"] == "observing"
+    assert target not in node.store.arb_banned
+    assert node.store.arb_suspicious[target]["confirmed"] is False
+    assert node.balances[charger1.address] < 100000.0 - 1.0  # 押金未退还（扣除 2 NOVA + gas）
+
+    # 第二名独立检举人确认后 → 检举成立：罚没全部质押 + 永久取消资格 + 押金退还
+    charger2 = QuantumWallet()
+    _fund(node, charger2.address)
+    _apply(node, _signed_tx(charger2, "nova:arb:charge", amount=2.0,
+                            target=target, kind="bribe", evidence="0xcafe"))
+    ar = node.store.arb_arbitrators[target]
     assert ar["stake"] == 0.0
     assert ar["status"] == "banned"
     assert target in node.store.arb_banned
-    assert node.balances[charger.address] > 100000.0 - 3.0
+    assert node.balances[charger2.address] > 100000.0 - 3.0  # 成立后退还押金
 
 
 # ---------------------------------------------------------------------------

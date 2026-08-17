@@ -52,6 +52,7 @@ class StateStore:
         self.inc_access_counts: Dict[int, dict] = {}  # 每日访问量统计（热门保护）
         self.inc_settled_epochs: set = set()          # 已结算周期
         self.inc_slashed: float = 0.0                 # 累计罚没（进入生态基金）
+        self.inc_maintain_keys: Set[str] = set()      # 维护类 op 限频键（addr|op|day，审计 M-11）
         # 算力任务市场状态
         self.compute_tasks: Dict[str, dict] = {}
         # 算力网络：节点注册/信誉/质押/竞价/争议/抽查/事件
@@ -218,6 +219,7 @@ class StateStore:
             "inc_access_counts": {str(k): v for k, v in self.inc_access_counts.items()},
             "inc_settled_epochs": sorted(self.inc_settled_epochs),
             "inc_slashed": self.inc_slashed,
+            "inc_maintain_keys": sorted(self.inc_maintain_keys),
             "compute_tasks": self.compute_tasks,
             "compute_nodes": self.compute_nodes,
             "compute_stats": self.compute_stats,
@@ -369,6 +371,7 @@ class StateStore:
         self.inc_access_counts = {int(k): v for k, v in d.get("inc_access_counts", {}).items()}
         self.inc_settled_epochs = set(int(x) for x in d.get("inc_settled_epochs", []))
         self.inc_slashed = float(d.get("inc_slashed", 0.0))
+        self.inc_maintain_keys = set(d.get("inc_maintain_keys", []))
         self.compute_tasks = dict(d.get("compute_tasks", {}))
         self.compute_nodes = dict(d.get("compute_nodes", {}))
         self.compute_stats = dict(d.get("compute_stats", {}))

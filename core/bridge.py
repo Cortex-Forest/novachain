@@ -47,7 +47,8 @@ def _amt(v):
 
 
 def _day(ts=None):
-    return time.strftime("%Y-%m-%d", time.localtime(ts if ts is not None else time.time()))
+    # UTC 自然日（审计：统一 UTC，避免跨时区节点额度窗口不一致）
+    return time.strftime("%Y-%m-%d", time.gmtime(ts if ts is not None else time.time()))
 
 
 class Bridge:
