@@ -56,6 +56,15 @@ def _sign_msg(wallet, payload):
     return payload
 
 
+def _inbox_url(wallet, ts=None):
+    """M-08：信箱读取由收件人本人签名（签名覆盖 inbox:{addr}:{ts}）。"""
+    ts = int(time.time()) if ts is None else int(ts)
+    sig = wallet.sign("inbox:" + wallet.address + ":" + str(ts))
+    return ("/api/chat/inbox/" + wallet.address +
+            "?pk=" + wallet.public_key_hex() +
+            "&sig=" + sig + "&ts=" + str(ts))
+
+
 # ---------------------------------------------------------------------------
 # ChatStore
 # ---------------------------------------------------------------------------
@@ -164,15 +173,25 @@ async def test_rpc_chat_send_inbox_ack():
         resp = await client.post("/api/chat/send", json=bad)
         assert resp.status == 400
 
-        # 收件箱
+        # 收件箱：必须由收件人签名读取（M-08）
         resp = await client.get("/api/chat/inbox/" + bob.address)
+        assert resp.status == 401
+
+        resp = await client.get(_inbox_url(bob))
         body = await resp.json()
         assert [m["id"] for m in body["messages"]] == [mid]
         assert body["messages"][0]["ciphertext"] == p["ciphertext"]
         assert body["messages"][0]["sender"] == alice.address
 
-        # 发件人自己看不到
-        resp = await client.get("/api/chat/inbox/" + alice.address)
+        # 发件人（非收件人）签名读取收件人信箱 -> 拒绝
+        resp = await client.get("/api/chat/inbox/" + bob.address +
+                                "?pk=" + alice.public_key_hex() +
+                                "&sig=" + alice.sign("inbox:" + bob.address + ":0") +
+                                "&ts=0")
+        assert resp.status == 401
+
+        # 发件人自己看不到（本人签名读取自己的信箱为空）
+        resp = await client.get(_inbox_url(alice))
         body = await resp.json()
         assert body["messages"] == []
 
@@ -187,7 +206,7 @@ async def test_rpc_chat_send_inbox_ack():
         # 无签名 ack -> 拒绝
         resp = await client.post("/api/chat/ack", json={"addr": bob.address, "ids": [mid]})
         assert resp.status == 400
-        resp = await client.get("/api/chat/inbox/" + bob.address)
+        resp = await client.get(_inbox_url(bob))
         assert (await resp.json())["messages"] == []
 
 

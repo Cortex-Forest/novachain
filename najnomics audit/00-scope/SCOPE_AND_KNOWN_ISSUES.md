@@ -77,11 +77,11 @@ P2-10 from_dict 重复恢复块；P2-11 RPC 校验文案不统一；P2-12 减半
 - TM-002（P2P 快照接管）：已修复（C-02，快照同步默认关闭/受信种子）
 - TM-003（PoS 补块/slash 滥用）：部分处理（H-03/H-04，b17ebcd）；补块超时判定仍用签名者自报时间戳（`consensus.py` 待核验）
 - TM-004（AI 基金单监护人掏空）：已处理（H-04 支出审批，`ai_service.py:304-317` 待核验）
-- TM-005（无签名签到/轻验证刷奖励）：开放（IP+设备指纹，客户端可伪造）
+- TM-005（无签名签到/轻验证刷奖励）：已修复（M-06；`/api/checkin` 要求地址签名 `checkin:{addr}`，`/api/light/verify` 仍为无签名端点待核验）
 - TM-006（前端私钥明文）：范围外（前端）
 - TM-007（扩展注入所有站点）：范围外（前端）
-- TM-008（聊天信箱无授权读取/灌满）：部分（ack 已验签；inbox 读取仍无鉴权，`nova_node.py:1253` 待核验）
-- TM-009（CORS `*` 跨站调用）：开放（`network/rpc.py` 待核验）
+- TM-008（聊天信箱无授权读取/灌满）：已修复（M-08；ack 验签 + inbox 读取需收件人签名 `inbox:{addr}:{ts}`，缺失/过期/非本人一律 401；`nova_node.py rpc_chat_inbox`）
+- TM-009（CORS `*` 跨站调用）：已修复（M-07；`network/rpc.py` 默认不发 CORS 头，`--cors-origins`/`NOVA_CORS_ORIGINS` 白名单精确回显）
 - TM-010（重复部署覆盖 creator）：已修复（nova_node.py:1122）
 - TM-011（Ed25519 未校验 s<L）：待核验 `core/crypto.py`
 - TM-012（float 金额精度）：开放（`core/transaction.py` canonical_amount 用 float）

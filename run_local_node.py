@@ -16,7 +16,8 @@ async def err_middleware(request, handler):
         raise
 
 def main():
-    node = NovaNode(host="127.0.0.1", p2p=9967, rpc=18081, use_tls=False, state_file=None, faucet=True)
+    # cors_origins=["*"]：本地 SDK 演示显式放开 CORS；生产节点请配置具体前端来源或留空
+    node = NovaNode(host="127.0.0.1", p2p=9967, rpc=18081, use_tls=False, state_file=None, faucet=True, cors_origins=["*"])
     node.store.balances[WALLET] = 20000.0
     app = web.Application(client_max_size=262144, middlewares=[err_middleware])
     setup_routes(app, node)

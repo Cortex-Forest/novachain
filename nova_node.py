@@ -44,11 +44,13 @@ class NovaNode:
     def __init__(self, host="0.0.0.0", p2p=9000, rpc=8080, seeds=None, genesis="genesis.json",
                  cert_file="cert.pem", key_file="key.pem", use_tls=True, state_file="chain_state.json",
                  block_interval=60, consensus_mode="checkpoint", validator_key=None, epoch_len=10800,
-                 sync_from_seeds=False, faucet=False):
+                 sync_from_seeds=False, faucet=False, cors_origins=None):
         self.host, self.p2p_port, self.rpc_port = host, p2p, rpc
         self.node_id = f"{host}:{p2p}"
         self.peers: Set[str] = set()
         self.seeds = seeds or []
+        # CORS 允许来源（M-07）：默认空列表 = 禁止浏览器跨域读取；显式配置后才回显
+        self.cors_origins = list(cors_origins or [])
         # 状态快照同步开关：默认关闭，仅显式开启时才接受种子节点的快照（防状态接管，C-02）
         self.sync_from_seeds = sync_from_seeds
 
@@ -1369,7 +1371,13 @@ class NovaNode:
         if guard: return guard
         b = await self._read_json(req)
         if not isinstance(b, dict): return web.json_response({"error":"请求体不是合法 JSON"}, status=400)
-        addr = b["addr"]
+        addr = str(b.get("addr", ""))
+        if not ADDRESS_RE.match(addr):
+            return web.json_response({"error":"地址格式无效"}, status=400)
+        # M-06：签到必须由地址所有者签名（签名覆盖 checkin:{addr}），防伪造地址/批量刷量
+        if not verify_quantum_tx("checkin:" + addr, b.get("signature", ""),
+                                 b.get("sender_public_key", ""), addr):
+            return web.json_response({"error":"签名验证失败"}, status=400)
         fingerprint = b.get("fingerprint","")
         ip = req.remote
 
@@ -1474,6 +1482,23 @@ class NovaNode:
         guard = await self._rpc_guard(req)
         if guard: return guard
         addr = req.match_info['addr']
+        if not ADDRESS_RE.match(addr):
+            return web.json_response({"error": "地址格式无效"}, status=400)
+        # M-08：信箱读取必须由收件人本人签名（GET 查询参数 pk/sig/ts，签名覆盖 inbox:{addr}:{ts}，
+        # 时间戳 ±5 分钟窗口防重放），任意地址无法再读取他人信箱
+        sig = req.query.get("sig", "")
+        pk = req.query.get("pk", "")
+        try:
+            ts = int(req.query.get("ts", "0"))
+        except (TypeError, ValueError):
+            ts = 0
+        if not sig or not pk or not ts:
+            return web.json_response({"error": "缺少签名参数（需 pk/sig/ts）"}, status=401)
+        if abs(time.time() - ts) > 300:
+            return web.json_response({"error": "时间戳过期"}, status=401)
+        if not verify_quantum_tx("inbox:" + addr + ":" + str(ts), sig, pk, addr):
+            return web.json_response({"error": "签名验证失败（请用收件人私钥签名 inbox:{addr}:{ts}）"},
+                                     status=401)
         msgs = self.chat.messages_for(addr)
         return web.json_response({"addr": addr, "messages": msgs})
 
@@ -2489,6 +2514,10 @@ class NovaNode:
             return web.json_response({"error": "地址格式不合法"}, status=400)
         if addr in ("0x0000", self.economy.FAUCET_POOL) or addr.startswith("0x_"):
             return web.json_response({"error": "该地址不可领取"}, status=400)
+        # M-06：水龙头领取必须由目标地址所有者签名（签名覆盖 faucet:{addr}），防代领/伪造/批量刷量
+        if not verify_quantum_tx("faucet:" + addr, b.get("signature", ""),
+                                 b.get("sender_public_key", ""), addr):
+            return web.json_response({"error": "签名验证失败"}, status=400)
 
         ip = req.remote
         now = time.time()
@@ -2670,13 +2699,20 @@ if __name__ == "__main__":
     p.add_argument("--epoch-len", type=int, default=10800, help="PoS epoch 块数（默认 10800 ≈ 7.5 天）")
     p.add_argument("--sync-from-seeds", action="store_true", help="接受种子节点状态快照同步（默认关闭，防状态接管）")
     p.add_argument("--faucet", action="store_true", help="启用测试网水龙头（主网请勿开启）")
+    p.add_argument("--cors-origins", default="",
+                   help="CORS 允许来源，逗号分隔（空=禁止浏览器跨域读取；'*'=本地开发/演示放开；"
+                        "生产建议填入前端站点来源，如 https://your-app.vercel.app；也可用环境变量 NOVA_CORS_ORIGINS 覆盖）")
     a = p.parse_args()
+    cors_origins_env = os.environ.get("NOVA_CORS_ORIGINS", "")
+    cors_origins = (a.cors_origins or cors_origins_env).split(",") if (a.cors_origins or cors_origins_env) else []
+    cors_origins = [o.strip() for o in cors_origins if o.strip()]
     node = NovaNode(host=a.host, p2p=a.p2p, rpc=a.rpc,
                     seeds=[a.seed] if a.seed else [],
                     genesis=a.genesis,
                     cert_file=a.cert, key_file=a.key, use_tls=not a.no_tls, state_file=a.state,
                     consensus_mode=a.consensus, validator_key=a.validator_key or None,
-                    epoch_len=a.epoch_len, sync_from_seeds=a.sync_from_seeds, faucet=a.faucet)
+                    epoch_len=a.epoch_len, sync_from_seeds=a.sync_from_seeds, faucet=a.faucet,
+                    cors_origins=cors_origins)
     asyncio.run(node.start())
 
 

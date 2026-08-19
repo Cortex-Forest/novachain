@@ -161,7 +161,11 @@ async def main():
         d = await r.json()
         check('chat send', r.status == 200 and d.get('id'), json.dumps(d))
         mid = d.get('id')
-        r = await s.get(URL + '/api/chat/inbox/' + B.address); d = await r.json()
+        # M-08：信箱读取由收件人本人签名（inbox:{addr}:{ts}）
+        inbox_ts = int(time.time())
+        inbox_sig = B.sign('inbox:' + B.address + ':' + str(inbox_ts))
+        inbox_q = '?pk=' + B.public_key_hex() + '&sig=' + inbox_sig + '&ts=' + str(inbox_ts)
+        r = await s.get(URL + '/api/chat/inbox/' + B.address + inbox_q); d = await r.json()
         check('chat inbox', [m['id'] for m in d.get('messages', [])] == [mid], json.dumps(d)[:160])
         ack_msg = 'ack:' + B.address + ':' + json.dumps(sorted(set([mid])))
         r = await s.post(URL + '/api/chat/ack', json={'addr': B.address, 'ids': [mid],
@@ -211,7 +215,11 @@ async def main():
                 break
             await asyncio.sleep(0.5)
         check('n2 sees fan token', ok)
-        r = await s.get('http://127.0.0.1:8582/api/chat/inbox/' + B.address); d = await r.json()
+        # M-08：信箱读取由收件人本人签名
+        inbox_ts2 = int(time.time())
+        inbox_sig2 = B.sign('inbox:' + B.address + ':' + str(inbox_ts2))
+        inbox_q2 = '?pk=' + B.public_key_hex() + '&sig=' + inbox_sig2 + '&ts=' + str(inbox_ts2)
+        r = await s.get('http://127.0.0.1:8582/api/chat/inbox/' + B.address + inbox_q2); d = await r.json()
         check('n2 chat ack propagated', d.get('messages') == [])
         r = await s.get('http://127.0.0.1:8582/api/status'); d = await r.json()
         check('n2 deploy_count via snapshot (eventual)', True, 'deploy_count=' + str(d.get('deploy_count', 0)) + ' (snapshot-synced)')

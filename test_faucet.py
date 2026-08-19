@@ -24,8 +24,13 @@ def _client(node):
     return TestClient(TestServer(app))
 
 
-async def _claim(client, addr, fingerprint=""):
-    body = {"addr": addr}
+async def _claim(client, wallet, fingerprint=""):
+    """M-06：水龙头领取必须由目标地址所有者签名（签名覆盖 faucet:{addr}）。"""
+    body = {
+        "addr": wallet.address,
+        "sender_public_key": wallet.public_key_hex(),
+        "signature": wallet.sign("faucet:" + wallet.address),
+    }
     if fingerprint:
         body["fingerprint"] = fingerprint
     return await client.post("/api/faucet/request", json=body)
@@ -46,7 +51,7 @@ async def test_faucet_bootstrap_and_mainnet_closed():
         d = await r.json()
         assert d["enabled"] is False
         addr = QuantumWallet().address
-        r = await _claim(client, addr)
+        r = await _claim(client, QuantumWallet())
         assert r.status == 403
 
 
@@ -64,7 +69,7 @@ async def test_faucet_claim_success():
         assert st["enabled"] is True
         assert st["amount"] == node.economy.FAUCET_AMOUNT
 
-        r = await _claim(client, addr, "fp-claim-success")
+        r = await _claim(client, wallet, "fp-claim-success")
         d = await r.json()
         assert d["status"] == "领取成功"
         assert d["amount"] == node.economy.FAUCET_AMOUNT
@@ -85,20 +90,21 @@ async def test_faucet_limits_addr_and_format():
     wallet = QuantumWallet()
     addr = wallet.address
     async with _client(node) as client:
-        r = await _claim(client, addr)
+        r = await _claim(client, wallet)
         assert (await r.json())["status"] == "领取成功"
 
-        r = await _claim(client, addr)
+        r = await _claim(client, wallet)
         assert r.status == 400
         assert "24 小时" in (await r.json())["error"]
 
-        r = await _claim(client, "not-an-address")
+        # 非法/保留地址：格式与保留校验先于签名校验，均拒绝
+        r = await client.post("/api/faucet/request", json={"addr": "not-an-address"})
         assert r.status == 400
 
-        r = await _claim(client, node.economy.FAUCET_POOL)
+        r = await client.post("/api/faucet/request", json={"addr": node.economy.FAUCET_POOL})
         assert r.status == 400
 
-        r = await _claim(client, "0x_ecosystem_fund")
+        r = await client.post("/api/faucet/request", json={"addr": "0x_ecosystem_fund"})
         assert r.status == 400
 
 
@@ -108,11 +114,11 @@ async def test_faucet_limits_addr_and_format():
 async def test_faucet_ip_cap():
     node = _node(faucet=True)
     async with _client(node) as client:
-        r = await _claim(client, QuantumWallet().address)
+        r = await _claim(client, QuantumWallet())
         assert (await r.json())["status"] == "领取成功"
-        r = await _claim(client, QuantumWallet().address)
+        r = await _claim(client, QuantumWallet())
         assert (await r.json())["status"] == "领取成功"
-        r = await _claim(client, QuantumWallet().address)
+        r = await _claim(client, QuantumWallet())
         assert r.status == 400
         assert "IP" in (await r.json())["error"]
 
@@ -123,9 +129,9 @@ async def test_faucet_ip_cap():
 async def test_faucet_device_unique():
     node = _node(faucet=True)
     async with _client(node) as client:
-        r = await _claim(client, QuantumWallet().address, "fp-device-1")
+        r = await _claim(client, QuantumWallet(), "fp-device-1")
         assert (await r.json())["status"] == "领取成功"
-        r = await _claim(client, QuantumWallet().address, "fp-device-1")
+        r = await _claim(client, QuantumWallet(), "fp-device-1")
         assert r.status == 400
         assert "设备" in (await r.json())["error"]
 
@@ -139,9 +145,9 @@ async def test_faucet_daily_cap_and_pool():
     node.economy.FAUCET_DAILY_CAP = node.economy.FAUCET_AMOUNT * 2  # 只够 2 次
     async with _client(node) as client:
         for _ in range(2):
-            r = await _claim(client, QuantumWallet().address)
+            r = await _claim(client, QuantumWallet())
             assert (await r.json())["status"] == "领取成功"
-        r = await _claim(client, QuantumWallet().address)
+        r = await _claim(client, QuantumWallet())
         assert r.status == 400
         assert "额度" in (await r.json())["error"]
 
@@ -149,7 +155,7 @@ async def test_faucet_daily_cap_and_pool():
     node2 = _node(faucet=True)
     node2.store.balances[node2.economy.FAUCET_POOL] = node2.economy.FAUCET_AMOUNT - 1
     async with _client(node2) as client:
-        r = await _claim(client, QuantumWallet().address)
+        r = await _claim(client, QuantumWallet())
         assert r.status == 400
         assert "资金池" in (await r.json())["error"]
 
@@ -161,7 +167,7 @@ async def test_faucet_status_fields():
     node = _node(faucet=True)
     wallet = QuantumWallet()
     async with _client(node) as client:
-        r = await _claim(client, wallet.address)
+        r = await _claim(client, wallet)
         assert (await r.json())["status"] == "领取成功"
         r = await client.get("/api/faucet/status")
         d = await r.json()
@@ -170,3 +176,30 @@ async def test_faucet_status_fields():
         assert d["today"]["amount"] == node.economy.FAUCET_AMOUNT
         assert d["total_claimed"] == node.economy.FAUCET_AMOUNT
         assert d["total_recipients"] == 1
+
+
+# ---------------------------------------------------------------------------
+# 8. M-06：无签名 / 非本人签名领取被拒
+# ---------------------------------------------------------------------------
+async def test_faucet_requires_signature():
+    node = _node(faucet=True)
+    wallet = QuantumWallet()
+    async with _client(node) as client:
+        # 无签名 -> 拒绝
+        r = await client.post("/api/faucet/request", json={"addr": wallet.address})
+        assert r.status == 400
+        assert "签名" in (await r.json())["error"]
+
+        # 非本人签名（用他人私钥签目标地址）-> 拒绝
+        other = QuantumWallet()
+        r = await client.post("/api/faucet/request", json={
+            "addr": wallet.address,
+            "sender_public_key": other.public_key_hex(),
+            "signature": other.sign("faucet:" + wallet.address),
+        })
+        assert r.status == 400
+        assert "签名" in (await r.json())["error"]
+
+        # 本人签名 -> 成功
+        r = await _claim(client, wallet)
+        assert (await r.json())["status"] == "领取成功"

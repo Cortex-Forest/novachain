@@ -16,6 +16,8 @@ python run_network.py
 ## 生产启动（启用 TLS）
 python nova_node.py --host 0.0.0.0 --p2p 9000 --rpc 8080
 python nova_node.py --host 0.0.0.0 --p2p 9000 --rpc 8080 --consensus pos --validator-key <hex>
+# 公共节点接入前端：显式配置 CORS 白名单（见下方「RPC 安全与 CORS」）
+python nova_node.py --host 0.0.0.0 --p2p 9000 --rpc 8080 --cors-origins https://你的前端域名.vercel.app
 
 ## 生成抗量子钱包
 python -c "from core.crypto import QuantumWallet; w = QuantumWallet(); print('地址:', w.address); print('私钥:', w.private_key_hex())"
@@ -24,10 +26,34 @@ python -c "from core.crypto import QuantumWallet; w = QuantumWallet(); print('�
 - CRYSTALS-Dilithium5 抗量子签名（NIST PQC 标准）
 - TLS 1.3 加密通信
 - RPC 频率限制（100次/秒/IP）
+- CORS 白名单（M-07：默认禁止跨域读取，需显式 `--cors-origins` 或 `NOVA_CORS_ORIGINS` 放开）
 - 交易去重防重放
 - 数据大小限制（100KB/交易，100KB/合约）
 - 质押防女巫（最低100 NOVA）
-- 签到防作弊（IP限制 + 设备指纹 + 20小时间隔）
+- 签到防作弊（IP限制 + 设备指纹 + 20小时间隔 + 地址签名）
+
+## RPC 安全与签名契约（v0.8）
+### CORS（M-07 修复：不再无条件 `*`）
+- 默认**不发** CORS 头，浏览器无法跨域读取节点数据（安全默认）；curl / SDK / 服务端调用不受影响。
+- `--cors-origins <origin1,origin2>`（逗号分隔）或环境变量 `NOVA_CORS_ORIGINS` 显式放开：仅精确匹配的来源被回显并带 `Vary: Origin`。
+- 本地演示 / 开发：`--cors-origins '*'`（`run_network.py` / `run_local_node.py` 已内置）。
+- 生产公共节点：填入前端站点来源（如 `https://xxx.vercel.app`），不要用 `*`。
+
+### 无签名端点补签（M-06 / M-08）
+以下端点此前可被任意调用，现已要求地址所有者签名（Ed25519 回退 / Dilithium5 均可，前端 WebCrypto 与后端交叉验签）：
+- 签到 `POST /api/checkin`：body 增加 `sender_public_key`、`signature`，签名消息 `checkin:{addr}`。
+- 水龙头 `POST /api/faucet/request`：body 增加 `sender_public_key`、`signature`，签名消息 `faucet:{addr}`（仅测试网 `--faucet` 开启）。
+- 聊天信箱读取 `GET /api/chat/inbox/{addr}?pk=<公钥>&sig=<签名>&ts=<时间戳>`：签名消息 `inbox:{addr}:{ts}`，时间戳 ±5 分钟窗口防重放；缺失/过期/非本人签名一律 401。
+- 聊天 `send`/`ack` 原本已签名（前者 `chat_signature_data`，后者 `ack:{addr}:{ids}`），保持不变。
+
+## 部署公共节点并接入前端 PUBLIC_RPC
+前端 `../novachain-web/apps-common.js` 顶部 `PUBLIC_RPC` 需填入**公网可达且 CORS 开放**的节点地址，线上站点才能真正跑链上数据（也可用 `?rpc=` URL 参数或设置页临时指定）。
+1. 准备一台有公网 IP 的服务器（VPS），放行端口（示例：P2P 9000 / RPC 8080，生产建议 443 反向代理 + TLS）。
+2. `pip install -r requirements.txt && pip install oqs`，再 `python cert_gen.py` 生成证书。
+3. 启动公共节点（CORS 白名单填前端站点来源，如 `https://xxx.vercel.app`）：
+   `python nova_node.py --host 0.0.0.0 --p2p 9000 --rpc 8080 --cors-origins https://xxx.vercel.app`
+4. 验证：`curl -s https://你的域名:8080/api/status`，且带 `Origin` 请求时响应头含 `Access-Control-Allow-Origin: https://xxx.vercel.app`。
+5. 把 `https://你的域名:8080` 填入 `apps-common.js` 的 `PUBLIC_RPC`（或通过 `?rpc=` / 设置页临时指定）。
 
 ## 经济参数
 - 总量：8100万 NOVA（锁死，永不增发）

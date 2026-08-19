@@ -1,24 +1,55 @@
 from aiohttp import web
 
 
-@web.middleware
-async def cors_middleware(request, handler):
-    if request.method == 'OPTIONS':
-        resp = web.Response(status=204)
-        resp.headers['Access-Control-Allow-Origin'] = '*'
-        resp.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
-        resp.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+def _normalize_origin(origin: str) -> str:
+    return (origin or "").strip().lower().rstrip("/")
+
+
+def cors_middleware_factory(allow_origins=None):
+    """CORS 中间件工厂（M-07 修复：不再无条件放行 *）。
+
+    - 默认（allow_origins 为空）：不返回任何 CORS 头，浏览器跨域读取被拦截（安全默认）。
+      非浏览器客户端（curl / SDK / 服务端）不受影响。
+    - allow_origins 含 "*"：回显 Access-Control-Allow-Origin: *（仅限本地开发 / 演示显式开启）。
+    - 其余情况：仅当请求 Origin 精确匹配白名单中的来源时才回显该来源，并带 Vary: Origin。
+    """
+    wildcard = False
+    allowed = set()
+    for o in (allow_origins or []):
+        o = _normalize_origin(o)
+        if o == "*":
+            wildcard = True
+        elif o:
+            allowed.add(o)
+
+    @web.middleware
+    async def cors_middleware(request, handler):
+        origin = _normalize_origin(request.headers.get("Origin", ""))
+        if not origin:
+            # 无 Origin 的请求（curl / SDK / 服务端调用）不触发 CORS 语义
+            if request.method == "OPTIONS":
+                return web.Response(status=204)
+            return await handler(request)
+
+        allow = "*" if wildcard else (origin if origin in allowed else "")
+
+        if request.method == "OPTIONS":
+            resp = web.Response(status=204)
+        else:
+            resp = await handler(request)
+
+        if allow:
+            resp.headers["Access-Control-Allow-Origin"] = allow
+            resp.headers["Vary"] = "Origin"
+            resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+            resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
         return resp
 
-    response = await handler(request)
-    response.headers['Access-Control-Allow-Origin'] = '*'
-    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
-    response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
-    return response
+    return cors_middleware
 
 
 def setup_routes(app, node):
-    app.middlewares.append(cors_middleware)
+    app.middlewares.append(cors_middleware_factory(getattr(node, "cors_origins", None)))
     app.router.add_get('/api/status', node.rpc_status)
     app.router.add_post('/api/send', node.rpc_send)
     app.router.add_post('/api/deploy', node.rpc_deploy)
