@@ -28,7 +28,9 @@ VOTING_DAYS = 7                 # 投票期
 TIMELOCK_HOURS = 48             # 时间锁
 QUORUM_RATIO = 0.10             # 投票率达到流通量 10%
 UPGRADE_SUPERMAJORITY = 2 / 3   # 协议升级 2/3 绝对多数
-TYPES = ("param", "fund", "upgrade", "arb")
+FREEZE_VOTE_HOURS = 6           # v0.10 紧急冻结投票 6 小时（快速响应）
+FREEZE_HOURS = 48               # v0.10 紧急冻结时长
+TYPES = ("param", "fund", "upgrade", "arb", "freeze", "payout")
 PARAM_TARGETS = ("economy", "dex", "bridge", "arbitration")
 ECONOMY_PARAMS = ("FIXED_GAS", "INIT_REWARD", "MIN_STAKE", "MAX_STAKE", "HALVING",
                   "MAX_TOTAL_STAKE", "MAX_UNBONDING_RATIO")
@@ -39,11 +41,12 @@ def _amt(v):
 
 
 class Governance:
-    def __init__(self, store, economy, bridge=None, dex=None):
+    def __init__(self, store, economy, bridge=None, dex=None, reserve=None):
         self.store = store
         self.economy = economy
         self.bridge = bridge
         self.dex = dex
+        self.reserve = reserve
 
     # ------------------------------------------------------------------
     # 投票权计算
@@ -73,7 +76,13 @@ class Governance:
         return power
 
     def circulating_supply(self):
-        return sum(float(v) for v in self.store.balances.values()) or 1.0
+        """流通量：排除 0x_ 资金池占位账户（储备金/生态基金/验证者池等不参与投票权与 quorum）。"""
+        total = 0.0
+        for a, v in self.store.balances.items():
+            if a.startswith("0x_"):
+                continue
+            total += float(v)
+        return total or 1.0
 
     # ------------------------------------------------------------------
     # 提案状态流转（确定性，按时间戳推进）
@@ -87,7 +96,11 @@ class Governance:
                 if (p.get("proposer_ok") or len(self.store.gov_endorsements.get(p["id"], [])) >= MIN_ENDORSEMENTS):
                     p["status"] = "voting"
                     p["vote_start"] = now
-                    p["vote_end"] = now + VOTING_DAYS * 86400
+                    # v0.10 紧急冻结：6 小时快速投票
+                    if p.get("ptype") == "freeze":
+                        p["vote_end"] = now + FREEZE_VOTE_HOURS * 3600
+                    else:
+                        p["vote_end"] = now + VOTING_DAYS * 86400
                 else:
                     p["status"] = "rejected"
                     p["reject_reason"] = "公示期结束，联署不足 100 人且发起人权益不足 1000 NOVA"
@@ -109,7 +122,8 @@ class Governance:
         p["status"] = "passed" if ok else "rejected"
         p["resolved_at"] = time.time()
         if ok:
-            p["timelock_end"] = time.time() + TIMELOCK_HOURS * 3600
+            # v0.10 紧急冻结通过即生效（无时间锁，快速响应）；其余走 48h 时间锁
+            p["timelock_end"] = 0.0 if p.get("ptype") == "freeze" else time.time() + TIMELOCK_HOURS * 3600
 
     # ------------------------------------------------------------------
     # 查询
@@ -159,7 +173,22 @@ class Governance:
         "nova:gov:confirm": "_confirm",
         "nova:gov:execute": "_execute",
         "nova:gov:cancel": "_execute",
+        "nova:payout:accept": "_payout",   # v0.10 事故赔付：受害者签署链上确认书
     }
+
+    # ---------------- 赔付确认书（v0.10） ----------------
+    def _payout_validate(self, d, tx):
+        if d.get("op") != "nova:payout:accept" or tx.amount != 0:
+            return False
+        po = self.store.payouts.get(d.get("payout_id", ""))
+        if not po or po.get("status") != "pending":
+            return False
+        return po.get("victim") == tx.sender
+
+    def _payout_apply(self, tx, d):
+        if self.reserve is not None:
+            self.reserve.confirm_payout(d["payout_id"], tx.sender, tx.timestamp)
+        self._record(tx, "nova:payout:accept", d["payout_id"], "赔付确认书已签署，到账")
 
     def validate_op(self, tx) -> bool:
         d = self._parse_op(tx)
@@ -228,6 +257,21 @@ class Governance:
                 value = d.get("value")
                 if not key or not isinstance(value, (int, float)) or isinstance(value, bool):
                     return False
+            elif ptype == "freeze":
+                # 紧急冻结：目标为合约地址或模块 op 名
+                if not isinstance(d.get("target", ""), str) or not d.get("target"):
+                    return False
+                h = d.get("hours")
+                if h is not None and (not isinstance(h, (int, float)) or h <= 0):
+                    return False
+            elif ptype == "payout":
+                # 事故赔付：受害者地址 + 实际损失（执行时自动 x80%）
+                if not ADDRESS_RE.match(d.get("victim", "")):
+                    return False
+                loss = d.get("loss")
+                if not isinstance(loss, (int, float)) or isinstance(loss, bool) \
+                        or not math.isfinite(loss) or loss <= 0:
+                    return False
             return True
         if op == "nova:gov:endorse":
             if tx.amount != 0:
@@ -261,6 +305,11 @@ class Governance:
                 p.update({"recipient": d["recipient"], "amount": d["amount"]})
             elif d["ptype"] == "upgrade":
                 p.update({"upgrade_height": d["upgrade_height"], "content": d["content"]})
+            elif d["ptype"] == "freeze":
+                p.update({"target": d["target"], "freeze_hours": d.get("hours", FREEZE_HOURS)})
+            elif d["ptype"] == "payout":
+                p.update({"victim": d["victim"], "loss": d["loss"],
+                          "reason": d.get("description", "")})
             else:
                 p.update({"arb_key": d["key"], "arb_value": d["value"]})
             self.store.gov_proposals[pid] = p
@@ -398,6 +447,16 @@ class Governance:
             return f"协议升级已登记：高度 {p['upgrade_height']}"
         if ptype == "arb":
             return f"仲裁参数已登记：{p.get('arb_key')}={p.get('arb_value')}"
+        if ptype == "freeze":
+            # v0.10 紧急冻结：目标合约/模块 48 小时内暂停（通过即生效）
+            if self.reserve is not None:
+                self.reserve.freeze_target(p["target"], p.get("freeze_hours"))
+            return f"紧急冻结 {p['target']}（{p.get('freeze_hours', FREEZE_HOURS)} 小时）"
+        if ptype == "payout":
+            # v0.10 事故赔付：实际损失 x 80% 从赔付基金自动赔付（受害者签确认书后到账）
+            if self.reserve is not None:
+                self.reserve.execute_payout(p["id"], p["victim"], p["loss"], p.get("reason", ""))
+            return f"事故赔付 {p['victim'][:12]}... 损失 {p['loss']}"
         return "noop"
 
     def maintain(self):

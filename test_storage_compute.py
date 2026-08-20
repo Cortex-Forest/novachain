@@ -375,7 +375,8 @@ def test_storage_pin_limits_and_self_claim():
     _apply(node, _signed_tx(attacker, "nova:storage:pin", cid=_cid(51), size_gb=1024, duration_days=3650))
     over = _signed_tx(attacker, "nova:storage:pin", cid=_cid(52), size_gb=1024, duration_days=3650)
     assert not node.validate_tx(over)
-    # 模块级纵深防御：基金不足时 pin 拒绝且不产生负余额
+    # 模块级纵深防御：基金不足时 pin 拒绝且不改变基金余额（不产生负余额）
     node2 = _node()
+    node2.balances[node2.economy.ECOSYSTEM_FUND] = 0.0   # 显式置空基金验证守卫
     assert node2.storage_net.pin("0x" + "1" * 40, "0x" + "2" * 64, 1024.0, 3650) == 0.0
     assert node2.balances.get(node2.economy.ECOSYSTEM_FUND, 0.0) == 0.0

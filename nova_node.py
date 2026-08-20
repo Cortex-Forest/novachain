@@ -33,6 +33,7 @@ from core.governance import Governance
 from core.did import DID
 from core.subscription import Subscription
 from core.fomo import AntiFOMO
+from core.reserve import ReserveEngine
 from network.p2p import P2PNetwork
 from network.rpc import setup_routes
 from network.security import SecurityManager
@@ -72,6 +73,9 @@ class NovaNode:
         self.subscription = Subscription(self.store, self.economy)
         self.security = SecurityManager()
         self.fomo = AntiFOMO(self.store)
+        # v0.10：储备金与经济安全网引擎（并联动治理的紧急冻结/赔付执行）
+        self.reserve = ReserveEngine(self.store, self.economy, self.oracle)
+        self.governance.reserve = self.reserve
         # 无感负载自适应（v0.9）：重操作延迟队列（内存，节点重启后由用户重新提交）
         self._load_queue = {}
         self._load_queue_seq = 0
@@ -84,6 +88,8 @@ class NovaNode:
                                          mode=consensus_mode, epoch_len=epoch_len)
         if state_file and os.path.exists(state_file):
             self._load_state()
+        # v0.10：资金池初始值（幂等，仅空账户注入，视为创世预留划拨）
+        self.reserve.seed_funds()
         self.faucet_enabled = faucet
         if faucet:
             self._bootstrap_faucet()
@@ -102,6 +108,12 @@ class NovaNode:
     def validate_tx(self, tx: Tx, allow_system: bool = False) -> bool:
         if self.security.is_replay(tx.txid): return False
         if not self.security.validate_size(tx.to_dict()): return False
+        # v0.10 网络重建模式：活跃节点跌破极端危险线，暂停新交易确认 1 小时
+        if self.reserve.rebuild_paused():
+            return False
+        # v0.10 紧急冻结：治理冻结的目标合约/模块 48h 内暂停
+        if self._frozen_tx(tx):
+            return False
         if tx.sender == "0x0000":
             # 0x0000 是系统铸造账户，仅允许节点内部路径（如 rpc_deploy）放行；
             # 外部提交必须走完整签名+余额校验，防止任意代币铸造（C-01）。
@@ -118,13 +130,15 @@ class NovaNode:
             if tx.data == "nova:stake":
                 if self.economy.stake_tier()[2]:
                     return False  # 质押过热保护（v0.9）：全网质押/流通 >= 80%，暂停新质押
-                if tx.amount < self.economy.MIN_STAKE or tx.amount > self.economy.MAX_STAKE:
-                    return False
+                if tx.amount < self.economy.min_stake() or tx.amount > self.economy.MAX_STAKE:
+                    return False  # v0.10 紧急招募期质押门槛降至 50
                 if self.store.stakes.get(tx.sender, 0) + tx.amount > self.economy.MAX_STAKE:
                     return False  # 单地址质押上限
                 if sum(self.store.stakes.values()) + tx.amount > self.economy.MAX_TOTAL_STAKE:
                     return False  # 全网质押上限
             if tx.data == "nova:unstake":
+                if self.reserve.stake_frozen(tx.timestamp):
+                    return False  # v0.10 质押保护期：价格暴跌冻结，验证者不能退出
                 staked = self.store.stakes.get(tx.sender, 0)
                 if tx.amount <= 0 or tx.amount > staked:
                     return False
@@ -786,6 +800,15 @@ class NovaNode:
         self.balances[self.economy.VALIDATOR_POOL] = self.balances.get(self.economy.VALIDATOR_POOL, 0) + gas
         self.subscription.apply_op(tx)
 
+    def _frozen_tx(self, tx) -> bool:
+        """v0.10 紧急冻结：目标合约地址或模块 op 在冻结期内拒绝。"""
+        if self.reserve.is_frozen(tx.receiver):
+            return True
+        d = self._parse_op_data(tx)
+        if isinstance(d, dict) and self.reserve.is_frozen(d.get("op", "")):
+            return True
+        return False
+
     def _is_any_op(self, tx) -> bool:
         return (self._is_stake_op(tx) or self._is_storage_op(tx) or self._is_storage_inc_op(tx)
                 or self._is_compute_op(tx) or self._is_ai_op(tx) or self._is_socialfi_op(tx)
@@ -794,13 +817,11 @@ class NovaNode:
                 or self._is_sub_op(tx))
 
     def gas_for(self, tx) -> float:
-        """无感动态手续费（v0.9）：
-        - 普通转账 / 娱乐消费 / 合约部署 / 前 1000 次合约调用：固定 0.000001 NOVA
-        - 大额纯转账（单笔 >10 万 NOVA）：×100
-        - 高频合约调用（同地址单日 >1000 次，第 1001 次起）：×10
-        - 取高者不叠乘；先按档位算基准，再乘信誉折扣（fee_multiplier）
-        - 费率规则公开、任何人可经 /api/fees 查询。"""
-        base = self.economy.FIXED_GAS
+        """无感动态手续费（v0.9 + v0.10）：
+        - v0.10 全网基准档位：按昨日 UTC 日交易量每 24h 调整（>100 万 1x / 10万-100万 10x / <10 万 100x）
+        - v0.9 单笔档位：大额纯转账（>10 万）×100、高频合约调用（>1000 次）×10（叠乘）
+        - 最后乘信誉折扣（>=80 享 50%）；费率规则经 /api/fees 公开可查。"""
+        base = self.economy.FIXED_GAS * self.economy.daily_volume_mult()
         mult = 1.0
         if not self._is_any_op(tx) and tx.amount > self.economy.LARGE_TRANSFER_THRESHOLD:
             mult = max(mult, self.economy.LARGE_TRANSFER_MULT)
@@ -919,7 +940,9 @@ class NovaNode:
             # 超级节点自动注册为存储节点（激励系统，无需额外配置）
             self.storage_incentive.auto_register(addr)
             # 早期矿工注册 + 前置空投（随交易确定性复制到全节点）
-            if addr not in self.store.miner_registry and len(self.store.miner_registry) < 81:
+            # v0.10 紧急招募期放开矿工上限（81 -> 1000），恢复正常后回归
+            max_miners = self.economy.RECRUIT_MAX_MINERS if self.economy.node_recovery_active() else 81
+            if addr not in self.store.miner_registry and len(self.store.miner_registry) < max_miners:
                 self.store.miner_registry[addr] = time.time()
                 self.store.miner_uptime[addr] = 0.0
                 if self.economy.early_airdrop(addr, "miner"):
@@ -1198,6 +1221,7 @@ class NovaNode:
         self.governance.maintain()
         self.did.maintain()
         self.subscription.maintain()
+        self.reserve.maintain()   # v0.10：储备金回购/补血/减支/补偿/重新起航
         self.economy.release_early_rewards()
         if self.state_file:
             self.save_state()
@@ -1210,6 +1234,8 @@ class NovaNode:
             try:
                 self.storage_incentive.scan_offline()
                 self.storage_incentive.reassign_endangered()
+                # v0.10 节点保障：每 5 分钟检查活跃节点数并记录链上
+                self.reserve.node_guard()
             except Exception as e:
                 print(f"[STORAGE-MONITOR] 监控失败: {e}")
 
@@ -1335,6 +1361,116 @@ class NovaNode:
             "heavy_queue_delay": {"high": ec.HEAVY_QUEUE_DELAY_HIGH, "extreme": ec.HEAVY_QUEUE_DELAY_EXTREME},
             "scale_boost_active": ec.disaster_load(),
             "queue": queue,
+        })
+
+    # ---------- v0.10 储备金与经济安全网 RPC ----------
+    async def rpc_reserve_status(self, req):
+        """GET /api/reserve/status：资金池余额/安全线/回购记录/储备金事件（公开可查）。"""
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        return web.json_response({
+            "funds": self.economy.fund_safety(),
+            "buyback_log": list(reversed(self.store.buyback_log))[:50],
+            "events": sorted(self.store.reserve_events.values(),
+                             key=lambda e: e.get("seq", 0), reverse=True)[:30],
+            "headwind_pool": self.store.headwind_pool,
+            "seed_fund": self.store.seed_fund,
+            "payout_fund": self.store.payout_fund,
+            "stake_freeze_until": self.store.stake_freeze_until,
+            "stake_frozen": self.reserve.stake_frozen(time.time()),
+            "buyback_paused": bool(self.store.gov_params.get("reserve.buyback_paused")),
+        })
+
+    async def rpc_node_guard(self, req):
+        """GET /api/node/guard：活跃节点监控（数量/安全线/招募/重建/历史）。"""
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        n = self.economy.active_nodes()
+        recruiting = self.economy.node_recovery_active()
+        return web.json_response({
+            "active_nodes": n,
+            "min_safe": self.economy.MIN_ACTIVE_NODES,
+            "critical": self.economy.CRITICAL_ACTIVE_NODES,
+            "recruiting": recruiting,
+            "min_stake_now": self.economy.min_stake(),
+            "min_stake_normal": self.economy.MIN_STAKE,
+            "block_reward_mult": 2.0 if recruiting else 1.0,
+            "rebuild_mode": self.reserve.rebuild_paused(),
+            "rebuild_until": self.store.rebuild_until,
+            "history": self.store.node_count_history[-100:],
+            "seed_nodes": self.reserve.seed_nodes(),
+            "message": f"全网节点 {n} 个，低于安全线 {self.economy.MIN_ACTIVE_NODES}，紧急招募中"
+                       if recruiting else "",
+        })
+
+    async def rpc_reserve_payouts(self, req):
+        """GET /api/reserve/payouts：事故赔付记录（公开）。"""
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        return web.json_response({"payouts": list(self.store.payouts.values()),
+                                  "fund": self.store.payout_fund})
+
+    async def rpc_reserve_freeze(self, req):
+        """GET /api/reserve/freeze：紧急冻结目标 + 质押冻结状态。"""
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        return web.json_response({"freeze_targets": self.store.freeze_targets,
+                                  "stake_freeze_until": self.store.stake_freeze_until,
+                                  "stake_frozen": self.reserve.stake_frozen(time.time())})
+
+    async def rpc_reserve_notices(self, req):
+        """GET /api/reserve/notices：链上公告（永久存证，不删改）。"""
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        return web.json_response({"notices": sorted(self.store.notices.values(),
+                                                    key=lambda n: n.get("ts", 0), reverse=True)})
+
+    async def rpc_reserve_sail(self, req):
+        """GET /api/reserve/sail：重新起航纪念 NFT（限量 1000，收入 100% 进生态基金）。"""
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        return web.json_response({
+            "active": self.economy.sail_active(),
+            "total": self.economy.SAIL_NFT_TOTAL,
+            "sold": self.store.sail_sold,
+            "price": self.economy.SAIL_NFT_PRICE,
+            "remaining": max(0, self.economy.SAIL_NFT_TOTAL - self.store.sail_sold),
+        })
+
+    async def rpc_reserve_sail_buy(self, req):
+        """POST /api/reserve/sail/buy：购买重新起航纪念 NFT（签名消息 sail:{addr}）。"""
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        b = await self._read_json(req)
+        if not isinstance(b, dict) or not b.get("addr"):
+            return web.json_response({"error": "缺少 addr"}, status=400)
+        addr = str(b.get("addr", ""))
+        if not self.economy.sail_active():
+            return web.json_response({"error": "当前未处于重新起航计划"}, status=400)
+        if not verify_quantum_tx("sail:" + addr, b.get("signature", ""),
+                                 b.get("sender_public_key", ""), addr):
+            return web.json_response({"error": "签名验证失败"}, status=400)
+        nft = self.reserve.sail_mint(addr, b.get("amount", self.economy.SAIL_NFT_PRICE))
+        if not nft:
+            return web.json_response({"error": "购买失败（已售罄/金额不符/余额不足）"}, status=400)
+        return web.json_response({"status": "ok", "nft": nft,
+                                  "remaining": max(0, self.economy.SAIL_NFT_TOTAL - self.store.sail_sold)})
+
+    async def rpc_loyalty(self, req):
+        """GET /api/loyalty/{addr}：忠诚者徽章状态（连续签到/逆风期/未来空投权重）。"""
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        addr = req.match_info.get("addr", "")
+        today = time.strftime("%Y-%m-%d", time.gmtime())
+        consec = self._consecutive_checkin(addr, today, 30)
+        return web.json_response({
+            "addr": addr,
+            "has_badge": addr in self.store.loyalty_badges,
+            "consecutive_30d": consec,
+            "checkin_days": self.store.light_checkins.get(addr, 0),
+            "headwind": self.economy.in_headwind(),
+            "future_airdrop_mult": 2.0 if addr in self.store.loyalty_badges else 1.0,
+            "flagged": bool(self.store.loyalty_flagged.get(addr, {}).get("until", 0) > time.time()),
         })
 
     async def rpc_status(self, req):
@@ -1637,11 +1773,17 @@ class NovaNode:
         fingerprint = b.get("fingerprint","")
         ip = req.remote
 
+        # v0.10 脚本刷签到检测：行为模式异常自动标记，标记期内临时限签
+        flagged = self.store.loyalty_flagged.get(addr, {})
+        if float(flagged.get("until", 0.0)) > time.time():
+            return web.json_response({"error":"检测到异常签到行为，请稍后再试"}, status=400)
+
         if not self.security.check_ip_limit(ip, "light"):
             return web.json_response({"error":"同一IP 24小时内只能一个轻节点签到"}, status=400)
         if fingerprint and not self.security.check_device_unique(fingerprint):
             return web.json_response({"error":"设备已注册"}, status=400)
         if not self.security.check_checkin_interval(addr):
+            self._checkin_suspect(ip, addr)
             return web.json_response({"error":"签到间隔需≥20小时"}, status=400)
 
         today = time.strftime("%Y-%m-%d", time.gmtime())
@@ -1653,6 +1795,11 @@ class NovaNode:
         self.store.light_checkin_dates[addr].add(today)
         self.store.light_checkins[addr] = len(self.store.light_checkin_dates[addr])
         self.security.record_checkin(addr)
+        # v0.10 逆风期留存：连续签到 30 天 -> 忠诚者徽章（不可转让，未来空投权重 x2）
+        if self.economy.in_headwind() and addr not in self.store.loyalty_badges \
+                and self._consecutive_checkin(addr, today, 30):
+            self.store.loyalty_badges.add(addr)
+            print(f"[LOYALTY] {addr[:12]}... 获得忠诚者徽章（连续签到 30 天）")
 
         if addr not in self.store.early_airdrop_received:
             active_light = sum(1 for a in self.store.light_checkins if self.store.light_checkins[a] > 0)
@@ -1667,6 +1814,31 @@ class NovaNode:
             self.store.light_qualified.add(addr)
 
         return web.json_response({"status":"签到成功","total_days":self.store.light_checkins[addr]})
+
+    def _checkin_suspect(self, ip, addr):
+        """v0.10 脚本刷签到检测：1 小时内 >=3 次签到失败 -> 自动标记并临时限签 1 小时。"""
+        now = time.time()
+        rec = self.store.loyalty_flagged.setdefault(addr, {})
+        fails = [t for t in rec.get("fails", []) if now - t < 3600]
+        fails.append(now)
+        rec["fails"] = fails
+        rec["last_ip"] = ip
+        if len(fails) >= 3:
+            rec["until"] = now + 3600
+            rec["reason"] = "1 小时内 >=3 次签到失败（疑似脚本刷量）"
+
+    def _consecutive_checkin(self, addr, today, n) -> bool:
+        """判定是否连续 n 天每天签到（UTC）。"""
+        dates = self.store.light_checkin_dates.get(addr, set())
+        try:
+            base = time.mktime(time.strptime(today, "%Y-%m-%d"))
+        except Exception:
+            return False
+        for i in range(n):
+            day = time.strftime("%Y-%m-%d", time.gmtime(base - i * 86400))
+            if day not in dates:
+                return False
+        return True
 
     async def rpc_early_info(self, req):
         guard = await self._rpc_guard(req)

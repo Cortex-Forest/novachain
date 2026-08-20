@@ -182,6 +182,27 @@ class StateStore:
         self.curate_votes: Dict[str, dict] = {}       # 内容质量：策展投票 content_id -> {voter: ts}
         self.curate_passed: Set[str] = set()          # 内容质量：已通过策展（>=3 票）
         self.bridge_addr_daily: Dict[str, dict] = {}  # 跨链大额：日期->{地址: 跨入 USDT 累计}
+        # ---- v0.10 储备金与经济安全网状态 ----
+        self.price_history: Dict[str, list] = {}      # 价格历史 feed->[[day, price], ...]
+        self.reserve_events: Dict[int, dict] = {}     # 储备金事件（公开可查）
+        self.reserve_event_seq: int = 0
+        self.buyback_log: list = []                   # 回购记录（触发原因/金额/价格）
+        self.stake_freeze_until: float = 0.0          # 质押冻结截止（0=未冻结）
+        self.headwind_pool: float = 0.0               # 逆风补偿池余额
+        self.headwind_comp_paid: Dict[str, str] = {}  # addr->日期（防重复发放）
+        self.loyalty_badges: Set[str] = set()         # 忠诚者徽章持有者
+        self.loyalty_flagged: Dict[str, dict] = {}    # 行为检测标记 addr->{until,reason}
+        self.rebuild_until: float = 0.0               # 网络重建暂停确认截止
+        self.node_count_history: list = []            # 节点数记录 [[ts, count], ...]
+        self.seed_fund: float = 0.0                   # 种子节点运维基金
+        self.seed_subsidy_paid: Dict[str, str] = {}   # addr->月份
+        self.payout_fund: float = 0.0                 # 事故赔付基金
+        self.payouts: Dict[str, dict] = {}            # 赔付记录
+        self.freeze_targets: Dict[str, float] = {}    # 紧急冻结目标->截止时间戳
+        self.notices: Dict[str, dict] = {}            # 链上公告（永久存证）
+        self.notice_seq: int = 0
+        self.sail_nfts: Dict[str, dict] = {}          # 重新起航纪念 NFT
+        self.sail_sold: int = 0
 
     def to_dict(self):
         return {
@@ -342,6 +363,26 @@ class StateStore:
             "curate_votes": self.curate_votes,
             "curate_passed": sorted(self.curate_passed),
             "bridge_addr_daily": self.bridge_addr_daily,
+            "price_history": self.price_history,
+            "reserve_events": {str(k): v for k, v in self.reserve_events.items()},
+            "reserve_event_seq": self.reserve_event_seq,
+            "buyback_log": self.buyback_log,
+            "stake_freeze_until": self.stake_freeze_until,
+            "headwind_pool": self.headwind_pool,
+            "headwind_comp_paid": self.headwind_comp_paid,
+            "loyalty_badges": sorted(self.loyalty_badges),
+            "loyalty_flagged": self.loyalty_flagged,
+            "rebuild_until": self.rebuild_until,
+            "node_count_history": self.node_count_history,
+            "seed_fund": self.seed_fund,
+            "seed_subsidy_paid": self.seed_subsidy_paid,
+            "payout_fund": self.payout_fund,
+            "payouts": self.payouts,
+            "freeze_targets": self.freeze_targets,
+            "notices": self.notices,
+            "notice_seq": self.notice_seq,
+            "sail_nfts": self.sail_nfts,
+            "sail_sold": self.sail_sold,
         }
 
     def from_dict(self, d):
@@ -505,6 +546,26 @@ class StateStore:
         self.curate_passed = set(d.get("curate_passed", []))
         self.bridge_addr_daily = {k: {addr: float(u) for addr, u in v.items()}
                                     for k, v in d.get("bridge_addr_daily", {}).items()}
+        self.price_history = {k: [list(h) for h in v] for k, v in d.get("price_history", {}).items()}
+        self.reserve_events = {int(k): v for k, v in d.get("reserve_events", {}).items()}
+        self.reserve_event_seq = int(d.get("reserve_event_seq", 0))
+        self.buyback_log = [dict(r) for r in d.get("buyback_log", [])]
+        self.stake_freeze_until = float(d.get("stake_freeze_until", 0.0))
+        self.headwind_pool = float(d.get("headwind_pool", 0.0))
+        self.headwind_comp_paid = dict(d.get("headwind_comp_paid", {}))
+        self.loyalty_badges = set(d.get("loyalty_badges", []))
+        self.loyalty_flagged = dict(d.get("loyalty_flagged", {}))
+        self.rebuild_until = float(d.get("rebuild_until", 0.0))
+        self.node_count_history = [list(h) for h in d.get("node_count_history", [])]
+        self.seed_fund = float(d.get("seed_fund", 0.0))
+        self.seed_subsidy_paid = dict(d.get("seed_subsidy_paid", {}))
+        self.payout_fund = float(d.get("payout_fund", 0.0))
+        self.payouts = dict(d.get("payouts", {}))
+        self.freeze_targets = {k: float(v) for k, v in d.get("freeze_targets", {}).items()}
+        self.notices = dict(d.get("notices", {}))
+        self.notice_seq = int(d.get("notice_seq", 0))
+        self.sail_nfts = dict(d.get("sail_nfts", {}))
+        self.sail_sold = int(d.get("sail_sold", 0))
 
 
     def save(self, path):

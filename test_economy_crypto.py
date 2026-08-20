@@ -204,7 +204,12 @@ def _economy(monkeypatch, now=None):
     store = StateStore("genesis.json")
     if now is not None:
         monkeypatch.setattr("core.economy.time", FakeTime(now))
-    return Economy(store), store
+    eco = Economy(store)
+    # v0.10：注入资金池初始值（与真实链一致，避免减支/招募误触发）
+    store.balances[eco.ECOSYSTEM_FUND] = eco.ECOSYSTEM_FUND_INITIAL
+    store.balances[eco.VALIDATOR_POOL] = eco.VALIDATOR_POOL_INITIAL
+    store.balances[eco.RESERVE] = eco.RESERVE_INITIAL
+    return eco, store
 
 
 def test_block_reward_halving(monkeypatch):
@@ -460,7 +465,8 @@ def test_apply_tx_call_reward_daily_once():
     creator = "0xcreator"
     contract = "0xcontract"
     node.balances[sender.address] = 1000
-    node.balances[Economy.ECOSYSTEM_FUND] = 10
+    # v0.10：生态基金需高于安全线（202.5 万），否则触发减支把调用分红降到最低档
+    node.balances[Economy.ECOSYSTEM_FUND] = 3_000_000
     node.contracts[contract] = "code"
     node.store.contract_creator[contract] = creator
     node.apply_tx(_signed_tx(sender, contract, 1))

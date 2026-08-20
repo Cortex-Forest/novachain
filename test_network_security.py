@@ -396,7 +396,8 @@ async def test_rpc_balance_and_status():
 
 async def test_rpc_deploy_and_call():
     node = _node()
-    node.balances[Economy.ECOSYSTEM_FUND] = 100
+    # v0.10：生态基金高于安全线（202.5 万），避免减支把部署奖励降到最低档
+    node.balances[Economy.ECOSYSTEM_FUND] = 3_000_000
     creator = QuantumWallet()
     bytecode = "code123"
     async with await _make_client(node) as client:
@@ -524,7 +525,8 @@ async def test_rpc_light_verify():
     node = _node()
     wallet = QuantumWallet()
     node.balances[wallet.address] = 100
-    node.balances[Economy.VALIDATOR_POOL] = 100
+    # v0.10：验证者池高于安全线（283.5 万），避免减支把轻节点验证奖励归零
+    node.balances[Economy.VALIDATOR_POOL] = 3_000_000
     tx = _signed_tx(wallet, "0xbob", 1)
     node.store.dag.add(tx.txid)
     async with await _make_client(node) as client:

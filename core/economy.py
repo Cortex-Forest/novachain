@@ -49,6 +49,48 @@ class Economy:
     VALIDATOR_POOL = "0x_validator_pool"
     ECOSYSTEM_FUND = "0x_ecosystem_fund"
     COMMUNITY_AIRDROP = "0x_community_airdrop"
+    # ---- v0.10 储备金与经济安全网 ----
+    RESERVE = "0x_reserve"                       # 储备金账户
+    RESERVE_INITIAL = 12_150_000.0               # 储备金初始值（genesis 预留对应）
+    ECOSYSTEM_FUND_INITIAL = 20_250_000.0        # 生态基金初始值（安全线基准）
+    VALIDATOR_POOL_INITIAL = 28_350_000.0        # 验证者池初始值（安全线基准）
+    ECO_SAFE_LINE = 2_025_000.0                  # 生态基金安全线 = 初始 10%
+    VALIDATOR_SAFE_LINE = 2_835_000.0            # 验证者池安全线 = 初始 10%
+    RESERVE_SAFE_LINE = 6_075_000.0              # 储备金安全线 = 初始 50%
+    BUYBACK_DEAD = "0x_dead"                     # 回购销毁黑洞地址
+    # 逆风期（昨日日量 <10 万笔）与全网动态手续费档位
+    HEADWIND_DAILY_VOLUME = 100_000              # 逆风线：日量 <10 万笔
+    VOLUME_NORMAL = 1_000_000                    # 日量 >100 万笔：1x
+    VOLUME_MID = 100_000                         # 10 万-100 万：10x（否则 <10 万：100x）
+    # 节点保障与紧急招募
+    MIN_ACTIVE_NODES = 50                        # 最低节点保障线
+    CRITICAL_ACTIVE_NODES = 10                   # 极端危险线（网络重建）
+    RECRUIT_MIN_STAKE = 50.0                     # 紧急招募期质押门槛（100 -> 50）
+    RECRUIT_MAX_MINERS = 1000                    # 招募期矿工上限（放开 81）
+    NODE_MONITOR_INTERVAL = 300                  # 每 5 分钟检查
+    SEED_NODE_QUOTA = 21                         # 种子节点名额（最早注册矿工）
+    SEED_FUND_RATIO = 0.03                       # 储备金 3% 建种子运维基金
+    SEED_SUBSIDY_MONTHLY = 100.0                 # 逆风期种子节点每月补贴
+    # 事故赔付与紧急冻结
+    PAYOUT_FUND_RATIO = 0.02                     # 储备金 2% 建事故赔付基金
+    PAYOUT_RATIO = 0.8                           # 赔付比例 80%（20% 自担防道德风险）
+    FREEZE_HOURS = 48                            # 紧急冻结时长
+    FREEZE_VOTE_HOURS = 6                        # 紧急冻结投票 6 小时
+    # 储备金自动补血
+    REFILL_ECO_RATIO = 0.20                      # 生态基金 <10%：储备金划拨 20%
+    REFILL_VALIDATOR_RATIO = 0.30                # 验证者池 <10%：储备金划拨 30%
+    SAIL_NFT_TOTAL = 1000                        # 重新起航纪念 NFT 限量
+    SAIL_NFT_PRICE = 100.0                       # 每枚售价（NOVA）
+    AUSTERITY_LIGHT_REWARD = 0.0                 # 减支期轻节点验证奖励归零
+    BUYBACK_MA7_30 = 0.30                        # 跌破 7 日均线 30%
+    BUYBACK_MA7_50 = 0.50
+    BUYBACK_MA7_70 = 0.70
+    BUYBACK_DAILY_CAP_RATIO = 0.01               # 单日回购上限 = 储备金 1%
+    BUYBACK_WEEKLY_CAP_RATIO = 0.03              # 单周回购上限 = 储备金 3%
+    HEADWIND_COMPENSATION_POOL_RATIO = 0.05      # 生态基金 5% 建逆风补偿池
+    HEADWIND_COMPENSATION_DAY = 1.0              # 每节点每天 1 NOVA
+    STAKE_FREEZE_DAYS = 30                       # 暴跌 >=50% 质押冻结天数
+    MA7_WINDOW_DAYS = 7                          # 7 日移动平均
 
     # 测试网水龙头：免费领取测试 NOVA（仅测试网模式启用，主网禁用）
     FAUCET_POOL = "0x_faucet_pool"            # 水龙头资金池地址
@@ -104,23 +146,107 @@ class Economy:
             return 1
         return 0
 
+    @staticmethod
+    def _prev_day_key():
+        """昨日 UTC 自然日键（容错）。"""
+        try:
+            return time.strftime("%Y-%m-%d", time.gmtime(time.time() - 86400))
+        except Exception:
+            return str(int(time.time()) // 86400 - 1)
+
+    def _prev_volume(self) -> int:
+        """昨日已确认交易量；无昨日数据（新链/测试）视为正常日量。"""
+        key = self._prev_day_key()
+        if key not in self.store.daily_tx_count:
+            return self.VOLUME_NORMAL + 1
+        return int(self.store.daily_tx_count.get(key, 0))
+
+    def daily_volume_mult(self) -> float:
+        """v0.10 全网动态手续费基准档位：按昨日 UTC 日交易量，每 24h 调整。"""
+        n = self._prev_volume()
+        if n > self.VOLUME_NORMAL:
+            return 1.0    # >100 万笔：正常
+        if n >= self.VOLUME_MID:
+            return 10.0   # 10 万-100 万：10 倍
+        return 100.0      # <10 万：100 倍（逆风期）
+
+    def in_headwind(self) -> bool:
+        """逆风期：昨日日交易量 <10 万笔（无昨日数据视为正常）。"""
+        return self._prev_volume() < self.HEADWIND_DAILY_VOLUME
+
+    def active_nodes(self) -> int:
+        """全网活跃节点 = 有效质押 >= 标准门槛(100) 的地址数。"""
+        return sum(1 for a, s in self.store.stakes.items() if float(s) >= self.MIN_STAKE)
+
+    def node_recovery_active(self) -> bool:
+        """紧急节点招募：存在质押体系但活跃节点 < 最低保障线（无质押 = bootstrap 期不算招募）。"""
+        return bool(self.store.stakes) and self.active_nodes() < self.MIN_ACTIVE_NODES
+
+    def critical_node_recovery(self) -> bool:
+        """网络重建模式：活跃节点跌破极端危险线。"""
+        return self.active_nodes() < self.CRITICAL_ACTIVE_NODES
+
+    def min_stake(self) -> float:
+        """当前质押门槛：紧急招募期降至 50 NOVA。"""
+        if self.node_recovery_active():
+            return self.RECRUIT_MIN_STAKE
+        return self.MIN_STAKE
+
+    def austerity_mode(self) -> bool:
+        """减支：生态基金或验证者池低于安全线。"""
+        return (self.store.balances.get(self.ECOSYSTEM_FUND, 0.0) < self.ECO_SAFE_LINE
+                or self.store.balances.get(self.VALIDATOR_POOL, 0.0) < self.VALIDATOR_SAFE_LINE)
+
+    def sail_active(self) -> bool:
+        """重新起航计划：生态基金与验证者池同时低于安全线。"""
+        return (self.store.balances.get(self.ECOSYSTEM_FUND, 0.0) < self.ECO_SAFE_LINE
+                and self.store.balances.get(self.VALIDATOR_POOL, 0.0) < self.VALIDATOR_SAFE_LINE)
+
+    def fund_safety(self) -> dict:
+        return {
+            "eco": self.store.balances.get(self.ECOSYSTEM_FUND, 0.0),
+            "eco_safe_line": self.ECO_SAFE_LINE,
+            "validator": self.store.balances.get(self.VALIDATOR_POOL, 0.0),
+            "validator_safe_line": self.VALIDATOR_SAFE_LINE,
+            "reserve": self.store.balances.get(self.RESERVE, 0.0),
+            "reserve_safe_line": self.RESERVE_SAFE_LINE,
+            "austerity": self.austerity_mode(),
+            "sail_active": self.sail_active(),
+        }
+
     def block_reward(self):
         h = min(int((time.time() - self.GENESIS_TIME) // self.HALVING), self.MAX_HALVINGS)
         r = self.INIT_REWARD / (2 ** h)
         if self.disaster_load():
-            r *= 2.0  # 灾难负载扩容激励：临时提高出块奖励（由 validator pool 支付，非增发）
+            r *= 2.0  # 灾难负载扩容激励
+        if self.node_recovery_active():
+            r *= 2.0  # 紧急节点招募：出块奖励临时提高 2 倍
         return r
 
     def deploy_reward(self):
-        return max(self.INIT_DEPLOY_REWARD / (2 ** (self.store.deploy_count // self.DEPLOY_HALVING_STEP)), self.MIN_DEPLOY_REWARD)
+        if self.austerity_mode():
+            return self.MIN_DEPLOY_REWARD
+        r = max(self.INIT_DEPLOY_REWARD / (2 ** (self.store.deploy_count // self.DEPLOY_HALVING_STEP)), self.MIN_DEPLOY_REWARD)
+        if self.in_headwind():
+            r *= 2.0  # 逆风期创作者部署奖励翻倍（5 -> 10）
+        return r
 
     def referral_reward(self):
+        if self.austerity_mode():
+            return self.MIN_REFERRAL_REWARD
         return max(self.INIT_REFERRAL_REWARD / (2 ** (self.store.referral_issued // self.REFERRAL_HALVING_STEP)), self.MIN_REFERRAL_REWARD)
 
     def call_reward(self):
-        return max(self.INIT_CALL_REWARD / (2 ** (self.store.call_count // self.CALL_HALVING_STEP)), self.MIN_CALL_REWARD)
+        if self.austerity_mode():
+            return self.MIN_CALL_REWARD
+        r = max(self.INIT_CALL_REWARD / (2 ** (self.store.call_count // self.CALL_HALVING_STEP)), self.MIN_CALL_REWARD)
+        if self.in_headwind():
+            r *= 2.0  # 逆风期合约调用分红翻倍（0.1 -> 0.2）
+        return r
 
     def light_verify_reward(self):
+        if self.austerity_mode():
+            return self.AUSTERITY_LIGHT_REWARD
         return self.block_reward()
 
     def effective_stake(self, n):
