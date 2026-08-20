@@ -203,6 +203,16 @@ class StateStore:
         self.notice_seq: int = 0
         self.sail_nfts: Dict[str, dict] = {}          # 重新起航纪念 NFT
         self.sail_sold: int = 0
+        # ---- v0.11 EVM 兼容层 / 混合账户 / MetaMask RPC / 跨引擎桥接状态 ----
+        self.evm_accounts: Dict[str, dict] = {}       # EVM 账户 evm_addr -> {owner, pubkey, migrated, bound_at}
+        self.evm_bindings: Dict[str, str] = {}        # native_addr -> evm_addr（共享 NOVA 余额绑定）
+        self.evm_nonce: Dict[str, int] = {}           # EVM 账户 nonce（MetaMask 交易计数）
+        self.evm_contracts: Dict[str, dict] = {}      # EVM 合约 evm_addr -> {bytecode, creator, ts}
+        self.evm_storage: Dict[str, dict] = {}        # EVM 合约存储 evm_addr -> {slot_int: value_int}
+        self.evm_receipts: Dict[str, dict] = {}       # EVM 交易回执 txhash -> 标准格式回执
+        self.evm_bridge_events: Dict[str, dict] = {}  # 跨引擎桥接事件 seq -> 记录
+        self.evm_bridge_seq: int = 0
+        self.evm_wrapped: Dict[str, dict] = {}        # 原生->EVM 包装资产 token_id -> 记录
 
     def to_dict(self):
         return {
@@ -383,6 +393,15 @@ class StateStore:
             "notice_seq": self.notice_seq,
             "sail_nfts": self.sail_nfts,
             "sail_sold": self.sail_sold,
+            "evm_accounts": self.evm_accounts,
+            "evm_bindings": self.evm_bindings,
+            "evm_nonce": self.evm_nonce,
+            "evm_contracts": self.evm_contracts,
+            "evm_storage": {k: {str(s): v for s, v in st.items()} for k, st in self.evm_storage.items()},
+            "evm_receipts": self.evm_receipts,
+            "evm_bridge_events": self.evm_bridge_events,
+            "evm_bridge_seq": self.evm_bridge_seq,
+            "evm_wrapped": self.evm_wrapped,
         }
 
     def from_dict(self, d):
@@ -566,7 +585,17 @@ class StateStore:
         self.notice_seq = int(d.get("notice_seq", 0))
         self.sail_nfts = dict(d.get("sail_nfts", {}))
         self.sail_sold = int(d.get("sail_sold", 0))
-
+        # ---- v0.11 EVM 兼容层状态 ----
+        self.evm_accounts = dict(d.get("evm_accounts", {}))
+        self.evm_bindings = dict(d.get("evm_bindings", {}))
+        self.evm_nonce = {k: int(v) for k, v in d.get("evm_nonce", {}).items()}
+        self.evm_contracts = dict(d.get("evm_contracts", {}))
+        self.evm_storage = {k: {int(s): int(v) for s, v in st.items()}
+                            for k, st in d.get("evm_storage", {}).items()}
+        self.evm_receipts = dict(d.get("evm_receipts", {}))
+        self.evm_bridge_events = dict(d.get("evm_bridge_events", {}))
+        self.evm_bridge_seq = int(d.get("evm_bridge_seq", 0))
+        self.evm_wrapped = dict(d.get("evm_wrapped", {}))
 
     def save(self, path):
         tmp = path + ".tmp"

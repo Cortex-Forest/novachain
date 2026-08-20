@@ -34,6 +34,13 @@ from core.did import DID
 from core.subscription import Subscription
 from core.fomo import AntiFOMO
 from core.reserve import ReserveEngine
+from core.evm import (Evm, CHAIN_ID, evm_address_from_pubkey, ecdsa_verify, keccak256,
+                      nova_to_wei, wei_to_nova, checksum_address, rlp_encode, _bytes_to_int)
+from core.evm_bridge import (EvmBridge, EVM_BRIDGE, NATIVE_BRIDGE, wrapped_token_id_hex,
+                             asset_uri, BRIDGE_FEE_RATE, NFT_BRIDGE_FEE, evm_bridge_bytecode)
+from core.evm_rpc import EvmRpc, EvmRpcError
+from core.evm_examples import (simple_storage_bytecode, erc20_bytecode, EXAMPLES,
+                               compile_asm)
 from network.p2p import P2PNetwork
 from network.rpc import setup_routes
 from network.security import SecurityManager
@@ -76,6 +83,11 @@ class NovaNode:
         # v0.10：储备金与经济安全网引擎（并联动治理的紧急冻结/赔付执行）
         self.reserve = ReserveEngine(self.store, self.economy, self.oracle)
         self.governance.reserve = self.reserve
+        # v0.11：EVM 兼容层 / MetaMask RPC / 跨引擎桥接 / 混合账户
+        self.evm = Evm(self.store, self.economy)
+        self.evm_bridge = EvmBridge(self.store, self.economy, self.evm)
+        self.evm_rpc = EvmRpc(self)
+        self._register_evm_system_contracts()
         # 无感负载自适应（v0.9）：重操作延迟队列（内存，节点重启后由用户重新提交）
         self._load_queue = {}
         self._load_queue_seq = 0
@@ -185,6 +197,12 @@ class NovaNode:
         elif self._is_sub_op(tx):
             if not self._validate_sub_op(tx):
                 return False
+        elif self._is_evm_op(tx):
+            if not self._validate_evm_op(tx):
+                return False
+        elif self._is_evm_bridge_op(tx):
+            if not self._validate_evm_bridge_op(tx):
+                return False
         elif tx.amount == 0 and tx.receiver not in self.contracts:
             return False
         if not isinstance(tx.timestamp, (int, float)) or abs(time.time() - tx.timestamp) > 300: return False
@@ -193,6 +211,24 @@ class NovaNode:
         if not self.fomo.validate_buy(tx):
             return False   # 反 FOMO：冷却期内拒绝买入类交易
         return self.balances.get(tx.sender, 0) >= tx.amount + self.gas_for(tx)
+
+    # ---- v0.11 EVM 兼容层 ----
+    EVM_OPS = ("nova:evm:bind", "nova:evm:migrate")
+    EVM_BRIDGE_OPS = ("nova:bridge:evm:convert", "nova:bridge:evm:revert")
+    EVM_SYSTEM_CONTRACTS = (EVM_BRIDGE, NATIVE_BRIDGE)  # 系统合约：调用不计部署奖励
+
+    def _register_evm_system_contracts(self):
+        """注册系统级桥接合约（EVM EvmBridge + 原生 ActorBridge 占位）。
+        仅登记在 evm_contracts（EVM 独立账本），不写入原生 store.contracts，
+        避免被原生索引器/浏览器误统计。"""
+        for addr, code in ((EVM_BRIDGE, evm_bridge_bytecode()),
+                           (NATIVE_BRIDGE, "")):
+            self.store.evm_contracts.setdefault(addr, {
+                "bytecode": code, "creator": "0x0000", "ts": int(time.time()),
+            })
+
+    def _is_evm_system_contract(self, addr):
+        return addr in self.EVM_SYSTEM_CONTRACTS
 
     STAKE_OPS = ("nova:stake", "nova:unstake", "nova:claim")
     STORAGE_OPS = ("nova:storage:register", "nova:storage:pin", "nova:storage:claim",
@@ -292,6 +328,18 @@ class NovaNode:
         d = self._parse_op_data(tx)
         return isinstance(d, dict) and d.get("op") in self.SUB_OPS
 
+    def _is_evm_op(self, tx):
+        if tx.sender != tx.receiver:
+            return False
+        d = self._parse_op_data(tx)
+        return isinstance(d, dict) and d.get("op") in self.EVM_OPS
+
+    def _is_evm_bridge_op(self, tx):
+        if tx.sender != tx.receiver:
+            return False
+        d = self._parse_op_data(tx)
+        return isinstance(d, dict) and d.get("op") in self.EVM_BRIDGE_OPS
+
     def _validate_socialfi_op(self, tx):
         return self.socialfi.validate_op(tx)
 
@@ -315,6 +363,90 @@ class NovaNode:
 
     def _validate_sub_op(self, tx):
         return self.subscription.validate_op(tx)
+
+    # ------------------------------------------------------------------
+    # v0.11：混合账户（nova:evm:bind / nova:evm:migrate）
+    # ------------------------------------------------------------------
+    def _validate_evm_op(self, tx):
+        d = self._parse_op_data(tx)
+        if d is None:
+            return False
+        op = d.get("op")
+        if op == "nova:evm:bind":
+            pub = d.get("pubkey", "")
+            if tx.amount != 0 or not isinstance(pub, str) or len(pub) != 128:
+                return False
+            try:
+                bytes.fromhex(pub)
+            except ValueError:
+                return False
+            evm_addr = evm_address_from_pubkey(bytes.fromhex(pub))
+            if evm_addr in self.store.evm_accounts:
+                return False  # 该 EVM 地址已绑定
+            return True
+        if op == "nova:evm:migrate":
+            evm_addr = d.get("evm_addr", "")
+            if tx.amount != 0 or evm_addr not in self.store.evm_accounts:
+                return False
+            acc = self.store.evm_accounts[evm_addr]
+            if acc.get("migrated"):
+                return False  # 迁移不可逆
+            if acc.get("owner") != tx.sender:
+                return False  # 仅 native 属主可迁移
+            # ECDSA 签名证明（对确定性消息；ts 取 payload 内字段，前端用同 ts 签名）
+            r = d.get("r"); s = d.get("s")
+            if not (isinstance(r, int) and isinstance(s, int)):
+                return False
+            ts = int(d.get("ts", tx.timestamp))
+            msg = f"nova:evm:migrate:{tx.sender}:{evm_addr}:{ts}"
+            pub = bytes.fromhex(acc["pubkey"])
+            if not ecdsa_verify(pub, keccak256(msg.encode()), r, s):
+                return False
+            return True
+        return False
+
+    def _apply_evm_op(self, tx):
+        d = self._parse_op_data(tx)
+        op = d.get("op")
+        addr = tx.sender
+        if op == "nova:evm:bind":
+            pub = bytes.fromhex(d["pubkey"])
+            evm_addr = evm_address_from_pubkey(pub)
+            self.store.evm_accounts[evm_addr] = {
+                "owner": addr, "pubkey": d["pubkey"], "migrated": False,
+                "bound_at": time.time(),
+            }
+            self.store.evm_bindings[addr] = evm_addr
+        elif op == "nova:evm:migrate":
+            evm_addr = d["evm_addr"]
+            acc = self.store.evm_accounts[evm_addr]
+            bal = self.store.balances.get(addr, 0.0)
+            self.store.balances[addr] = 0.0
+            self.store.balances[evm_addr] = _amt(self.store.balances.get(evm_addr, 0.0) + bal)
+            acc["migrated"] = True
+            acc["migrated_at"] = time.time()
+
+    # ------------------------------------------------------------------
+    # v0.11：跨引擎桥接（convert / revert）
+    # ------------------------------------------------------------------
+    def _validate_evm_bridge_op(self, tx):
+        d = self._parse_op_data(tx)
+        if d is None:
+            return False
+        op = d.get("op")
+        if op == "nova:bridge:evm:convert":
+            return self.evm_bridge.convert_validate(d, tx)
+        if op == "nova:bridge:evm:revert":
+            return self.evm_bridge.revert_validate(d, tx)
+        return False
+
+    def _apply_evm_bridge_op(self, tx):
+        d = self._parse_op_data(tx)
+        op = d.get("op")
+        if op == "nova:bridge:evm:convert":
+            self.evm_bridge.convert_apply(tx, d)
+        elif op == "nova:bridge:evm:revert":
+            self.evm_bridge.revert_apply(tx, d)
 
     @staticmethod
     def _parse_op_data(tx):
@@ -856,7 +988,7 @@ class NovaNode:
               or self._is_compute_op(tx) or self._is_ai_op(tx) or self._is_socialfi_op(tx)
               or self._is_arb_op(tx) or self._is_oracle_op(tx) or self._is_bridge_op(tx)
               or self._is_dex_op(tx) or self._is_gov_op(tx) or self._is_did_op(tx)
-              or self._is_sub_op(tx)):
+              or self._is_sub_op(tx) or self._is_evm_op(tx) or self._is_evm_bridge_op(tx)):
             gas = self.gas_for(tx)
         else:
             gas = self.gas_for(tx)  # 审计 M-14：与 apply_tx 实际扣费一致
@@ -1035,6 +1167,14 @@ class NovaNode:
             return
         if self._is_sub_op(tx):
             self._apply_sub_op(tx)
+            return
+        if self._is_evm_op(tx):
+            self.balances[tx.sender] = self.balances.get(tx.sender, 0) - self.gas_for(tx)
+            self._apply_evm_op(tx)
+            return
+        if self._is_evm_bridge_op(tx):
+            self.balances[tx.sender] = self.balances.get(tx.sender, 0) - self.gas_for(tx)
+            self._apply_evm_bridge_op(tx)
             return
         old_balance = self.balances.get(tx.receiver, 0)
         # 审计 M-14：扣费与 validate_tx 一致（gas_for 含信誉折扣与动态档位），避免高信誉地址余额被扣为负
@@ -3019,6 +3159,152 @@ class NovaNode:
             "balance": _amt(self.store.balances[addr]),
             "receipt": rid,
             "remaining_today": _amt(self.economy.FAUCET_DAILY_CAP - float(daily["amount"])),
+        })
+
+    # ------------------------------------------------------------------
+    # v0.11：MetaMask 兼容 RPC（/rpc 标准 JSON-RPC，与 /api/* 并行）
+    # ------------------------------------------------------------------
+    async def rpc_evm_jsonrpc(self, req):
+        """POST /rpc：以太坊 JSON-RPC 标准接口（eth_* 按方法名分发，端口复用）。"""
+        try:
+            raw = await req.json()
+        except Exception:
+            return web.json_response({"jsonrpc": "2.0", "id": None,
+                                      "error": {"code": -32700, "message": "parse error"}},
+                                     status=400)
+        if isinstance(raw, list):  # 批量请求
+            return web.json_response([self.evm_rpc.handle(p) for p in raw])
+        if not isinstance(raw, dict):
+            return web.json_response({"jsonrpc": "2.0", "id": None,
+                                      "error": {"code": -32600, "message": "invalid request"}},
+                                     status=400)
+        return web.json_response(self.evm_rpc.handle(raw))
+
+    async def rpc_evm_network(self, req):
+        """GET /api/evm/network：MetaMask 网络配置信息（Chain ID / RPC / 符号 / 浏览器）。"""
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        return web.json_response({
+            "chainId": CHAIN_ID,
+            "chainIdHex": hex(CHAIN_ID),
+            "rpcUrl": f"{req.scheme}://{req.host}/rpc",
+            "symbol": "NOVA",
+            "decimals": 18,
+            "explorer": "https://explorer.yourdomain.com",
+            "native_decimals": 8,
+            "gas": self.economy.FIXED_GAS,
+            "system_contracts": {"evm_bridge": EVM_BRIDGE, "native_bridge": NATIVE_BRIDGE},
+        })
+
+    async def rpc_evm_bind_info(self, req):
+        """GET /api/evm/bind/{native_addr}：查询 native 账户绑定的 EVM 地址与迁移状态。"""
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        addr = req.match_info['addr'].lower()
+        if not ADDRESS_RE.match(addr):
+            return web.json_response({"error": "地址格式无效"}, status=400)
+        evm_addr = self.store.evm_bindings.get(addr, "")
+        if not evm_addr:
+            return web.json_response({"addr": addr, "evm_addr": None, "bound": False})
+        acc = self.store.evm_accounts.get(evm_addr, {})
+        return web.json_response({
+            "addr": addr,
+            "evm_addr": evm_addr,
+            "evm_checksum": checksum_address(evm_addr),
+            "bound": True,
+            "migrated": bool(acc.get("migrated")),
+            "evm_balance": self.store.balances.get(evm_addr, 0.0),
+            "bound_at": acc.get("bound_at"),
+        })
+
+    async def rpc_evm_bridge_summary(self, req):
+        """GET /api/evm/bridge/summary：跨引擎桥接概况（包装资产 / 事件 / 手续费率）。"""
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        return web.json_response({
+            "fee_rate": BRIDGE_FEE_RATE,
+            "nft_fee": NFT_BRIDGE_FEE,
+            "wrapped_total": len(self.store.evm_wrapped),
+            "wrapped_assets": sorted(self.store.evm_wrapped.keys())[:50],
+            "events": list(self.store.evm_bridge_events.values())[-50:],
+            "event_seq": self.store.evm_bridge_seq,
+            "validator_pool": self.store.balances.get(self.economy.VALIDATOR_POOL, 0.0),
+            "evm_bridge": EVM_BRIDGE,
+            "native_bridge": NATIVE_BRIDGE,
+        })
+
+    async def rpc_evm_wrapped(self, req):
+        """GET /api/evm/wrapped/{native_or_evm}：查询某地址持有的包装资产（OpenSea 可识别）。"""
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        addr = req.match_info['addr'].lower()
+        items = []
+        for tid, rec in self.store.evm_wrapped.items():
+            if rec.get("evm_owner") == addr or rec.get("native_owner") == addr:
+                items.append({
+                    "token_id": tid,
+                    "token_id_hex": wrapped_token_id_hex(rec["native_asset"]),
+                    "contract": EVM_BRIDGE,
+                    "native_asset": rec.get("native_asset"),
+                    "kind": rec.get("kind"),
+                    "amount": rec.get("amount"),
+                    "evm_owner": rec.get("evm_owner"),
+                    "native_owner": rec.get("native_owner"),
+                    "uri": rec.get("uri"),
+                })
+        return web.json_response({"addr": addr, "wrapped": items, "count": len(items)})
+
+    async def rpc_evm_receipt(self, req):
+        """GET /api/evm/receipt/{txhash}：EVM 交易回执（标准格式）。"""
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        txhash = req.match_info['txhash'].lower()
+        receipt = self.store.evm_receipts.get(txhash)
+        if not receipt:
+            return web.json_response({"error": "回执不存在或尚未上链"}, status=404)
+        return web.json_response(receipt)
+
+    async def rpc_faucet_evm(self, req):
+        """POST /api/faucet/evm：发放测试 NOVA 到 EVM 地址（复用测试网水龙头，仅 faucet 模式）。"""
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        if not self.faucet_enabled:
+            return web.json_response({"error": "水龙头未启用（主网模式关闭）"}, status=403)
+        b = await self._read_json(req)
+        if not isinstance(b, dict):
+            return web.json_response({"error": "请求体不是合法 JSON"}, status=400)
+        addr = str(b.get("addr", "")).strip().lower()
+        if not (addr.startswith("0x") and len(addr) == 42 and all(c in "0123456789abcdef" for c in addr[2:])):
+            return web.json_response({"error": "EVM 地址格式不合法"}, status=400)
+        if addr in ("0x0000", self.economy.FAUCET_POOL) or addr.startswith("0x_"):
+            return web.json_response({"error": "该地址不可领取"}, status=400)
+        now = time.time()
+        today = time.strftime("%Y-%m-%d", time.gmtime())
+        claim = self.store.faucet_claims.get(addr, {})
+        if claim and now - float(claim.get("last_ts", 0)) < self.economy.FAUCET_COOLDOWN:
+            remain = int(self.economy.FAUCET_COOLDOWN - (now - float(claim.get("last_ts", 0))))
+            return web.json_response({"error": f"该地址 24 小时内已领取，{remain // 3600} 小时后再试"}, status=400)
+        daily = self.store.faucet_daily.get(today, {"count": 0, "amount": 0.0, "ips": {}})
+        if float(daily.get("amount", 0.0)) + self.economy.FAUCET_AMOUNT > self.economy.FAUCET_DAILY_CAP:
+            return web.json_response({"error": "今日发放额度已用尽，请明日再来"}, status=400)
+        pool = self.store.balances.get(self.economy.FAUCET_POOL, 0)
+        if pool < self.economy.FAUCET_AMOUNT:
+            return web.json_response({"error": "水龙头资金池余额不足"}, status=400)
+        self.store.balances[self.economy.FAUCET_POOL] = pool - self.economy.FAUCET_AMOUNT
+        self.store.balances[addr] = self.store.balances.get(addr, 0) + self.economy.FAUCET_AMOUNT
+        self.store.faucet_claims[addr] = {
+            "last_ts": now, "total": float(claim.get("total", 0)) + self.economy.FAUCET_AMOUNT,
+            "count": int(claim.get("count", 0)) + 1, "ip": req.remote,
+        }
+        daily["count"] = int(daily.get("count", 0)) + 1
+        daily["amount"] = float(daily.get("amount", 0.0)) + self.economy.FAUCET_AMOUNT
+        self.store.faucet_daily[today] = daily
+        self.store.faucet_seq += 1
+        print(f"[FAUCET] EVM 地址 {addr[:12]}... 领取 {self.economy.FAUCET_AMOUNT} NOVA")
+        return web.json_response({
+            "status": "领取成功", "amount": self.economy.FAUCET_AMOUNT, "addr": addr,
+            "balance": _amt(self.store.balances[addr]),
+            "wei_balance": hex(int(self.store.balances[addr] * 10 ** 18)),
         })
 
     # ---------- 社区仲裁 RPC ----------

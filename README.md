@@ -283,6 +283,43 @@ python -c "from core.crypto import QuantumWallet; w = QuantumWallet(); print('�
 ### 测试
 `python -m pytest test_reserve_safety.py -q`（19 项，覆盖五组）；RPC：`/api/reserve/status`、`/api/node/guard`、`/api/reserve/payouts`、`/api/reserve/freeze`、`/api/reserve/notices`、`/api/reserve/sail`、`/api/loyalty/{addr}`。
 
+## EVM 兼容层 / MetaMask RPC / 跨引擎桥接（v0.11）
+
+### 1. EVM 兼容层（`core/evm.py`）
+- 纯 Python **轻量 EVM 解释器**：覆盖 Solidity 0.8 常见字节码操作码子集（算术/比较/位运算/内存/存储/跳转/事件/CALL/STATICCALL/CREATE/CREATE2），无第三方依赖。
+- 密码学原语：**Keccak-256**（以太坊版）、**secp256k1 ECDSA** 验签与公钥恢复、**RLP** 编解码。
+- 沙盒限制：内存 64KB / 步数 20 万 / 单合约存储槽 10 万 / gas 计量。
+- 部署地址：`create_address = keccak256(rlp([sender, nonce]))[-20:]`（CREATE 语义，Hardhat/Foundry 可对接）。
+
+### 2. MetaMask 兼容与 RPC 适配（`core/evm_rpc.py`，`POST /rpc`）
+- 以太坊 JSON-RPC 标准接口，与 `/api/*` **端口复用、按方法名区分、互不冲突**：
+  `eth_chainId`、`eth_blockNumber`、`eth_getBalance`、`eth_getTransactionCount`、`eth_sendRawTransaction`（完整 RLP 解码 + ECDSA 恢复）、`eth_sendTransaction`、`eth_call`、`eth_estimateGas`、`eth_gasPrice`、`eth_getTransactionReceipt`、`eth_getTransactionByHash`、`eth_getCode`、`eth_getStorageAt`、`eth_accounts`、`eth_getLogs`、`net_version`、`net_listening`、`eth_syncing`、`eth_coinbase`。
+- **MetaMask 网络配置**：Chain ID `666666`（`0xa23a2`）、RPC `https://你的节点域名/rpc`、符号 `NOVA`（18 位 wei，链内换算 8 位）、区块浏览器 `https://explorer.yourdomain.com`。
+- 交易路径：RLP 签名交易 → ECDSA 验签/恢复 → nonce/余额校验 → EVM 执行（或部署/转账）→ **DAG 账本同步** → 标准回执（`txHash/from/to/gasUsed/status/logs`）。
+
+### 3. 混合账户与签名模型（`nova:evm:bind` / `nova:evm:migrate`）
+- 账户双钥：量子主钥（原生）+ ECDSA 从钥（MetaMask）。
+- `nova:evm:bind`：native 绑定 ECDSA 公钥 → 派生 EVM 地址（共享同一 `balances` 账本）。
+- `nova:evm:migrate`：ECDSA 签名（确定性消息）验证 → native 余额迁至 EVM 地址 → `migrated` **不可逆**。
+- 前端支持"用 MetaMask 参与娱乐内容交易"切换。
+
+### 4. 跨引擎资产桥接（`core/evm_bridge.py`）
+- 系统级桥接合约：EVM 侧 `EvmBridge`（`EVM_BRIDGE`）+ 原生侧 `ActorBridge`（`NATIVE_BRIDGE`），部署豁免部署奖励。
+- 原生资产（粉丝代币/碎片/盲盒成就）→ EVM 包装 **ERC-721**（tokenId 确定性，OpenSea 可识别）；支持一键转回。
+- **原子性**：余额/资产快照 + 顺序扣源→铸目标，失败整笔回滚（无半途状态）。
+- 手续费 **0.1%**（NFT 每枚 0.001 NOVA），100% 回流验证者激励池。
+- 用户端操作：`nova:bridge:evm:convert` / `nova:bridge:evm:revert`。
+
+### 5. Solidity 部署与开发工具链（`core/evm_examples.py`）
+- 真实可执行示例合约（微型汇编器生成）：`SimpleStorage`、`ERC20Nova`（totalSupply/balanceOf/transfer/approve/allowance/transferFrom/mint/name/symbol/decimals）。
+- Solidity 源码模板：`MusicNFT.sol`（ERC-721 + 版税）、`BlindBox.sol`（ERC-1155 + 可验证随机）、`Subscription.sol`（ERC-20 订阅门控）。
+- 工具链配置：`hardhat.config.ts`、`foundry.toml`、`networks.json`、MetaMask 添加指南。
+- 测试网水龙头：`POST /api/faucet/evm`（发放测试 NOVA 到 EVM 地址）。
+
+### RPC / 测试
+- EVM RPC：`GET /api/evm/network`（网络配置）、`GET /api/evm/bind/{native}`、`GET /api/evm/bridge/summary`、`GET /api/evm/wrapped/{addr}`、`GET /api/evm/receipt/{txhash}`。
+- 测试：`test_evm_compat.py`（17 项）、`test_evm_security.py`（15 项）、`test_evm_stress.py`（4 项）；审计报告：`docs/EVM_COMPAT_AUDIT.md`。
+
 ## 安全审计与回归
 - 完整审计报告：`docs/AUDIT_2026-08-13.md`（P0×3 / P1×6 / P2×8 + 接口契约）。
 - 回归测试：`test_audit_regressions.py`（P0/P1 修复点）、`test_vm_nexlang.py`（VM/编译器）。

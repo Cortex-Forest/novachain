@@ -189,3 +189,11 @@ def setup_routes(app, node):
     app.router.add_post('/api/faucet/request', node.rpc_faucet_request)
     app.router.add_get('/api/arb/notifications/{addr}', node.rpc_arb_notifications)
     app.router.add_post('/api/arb/notifications/read', node.rpc_arb_read)
+    # ---------- v0.11 EVM 兼容层 / MetaMask RPC / 跨引擎桥接 ----------
+    app.router.add_post('/rpc', node.rpc_evm_jsonrpc)
+    app.router.add_get('/api/evm/network', node.rpc_evm_network)
+    app.router.add_get('/api/evm/bind/{addr}', node.rpc_evm_bind_info)
+    app.router.add_get('/api/evm/bridge/summary', node.rpc_evm_bridge_summary)
+    app.router.add_get('/api/evm/wrapped/{addr}', node.rpc_evm_wrapped)
+    app.router.add_get('/api/evm/receipt/{txhash}', node.rpc_evm_receipt)
+    app.router.add_post('/api/faucet/evm', node.rpc_faucet_evm)
