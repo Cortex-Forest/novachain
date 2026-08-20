@@ -95,24 +95,25 @@ def test_deposit_mint():
 
 
 # ---------------------------------------------------------------------------
-# 2. 每日额度上限（100 万 USDT）
+# 2. 无感跨链大额保护（v0.9）：每日 1000 万软上限转风控审核（不再硬拒）
 # ---------------------------------------------------------------------------
-def test_daily_limit():
+def test_daily_limit_review_not_reject():
     node = _node()
     nodes = _nodes(node)
     user = QuantumWallet()
     _asset(node, nodes[0])
     node.store.bridge_daily_usage[_day()] = {"minted_usd": 999_999.0, "released_usd": 0.0}
-    bad = _signed_tx(nodes[0], "nova:bridge:deposit", data={"amount": 100.0},
-                     asset="nUSDT", source_chain="bsc",
-                     source_tx="cd" * 32, source_addr=user.address)
-    assert not node.validate_tx(bad)
+    # 未达 1000 万软上限：放行（旧 100 万硬拒已移除）
+    ok = _signed_tx(nodes[0], "nova:bridge:deposit", data={"amount": 100.0},
+                    asset="nUSDT", source_chain="bsc",
+                    source_tx="cd" * 32, source_addr=user.address)
+    assert node.validate_tx(ok)
 
 
 # ---------------------------------------------------------------------------
-# 3. 大额跨链（>10 万 USDT）延迟 24 小时
+# 3. 分档延迟：<10 万立即 / 10 万-100 万 1h / >100 万 24h
 # ---------------------------------------------------------------------------
-def test_large_deposit_hold_24h():
+def test_large_deposit_tier_1h():
     node = _node()
     nodes = _nodes(node)
     user = QuantumWallet()
@@ -121,16 +122,94 @@ def test_large_deposit_hold_24h():
                             asset="nUSDT", source_chain="eth",
                             source_tx="ef" * 32, source_addr=user.address))
     did = next(reversed(node.store.bridge_deposits))
+    dep = node.store.bridge_deposits[did]
+    assert dep["large"]
+    assert dep["available_at"] - dep["created_at"] == pytest.approx(3600)   # 10万-100万 -> 1h
     _apply(node, _signed_tx(nodes[1], "nova:bridge:deposit:sign", deposit_id=did,
                             source_tx="ef" * 32, source_addr=user.address, source_amount=200_000.0))
     _apply(node, _signed_tx(nodes[2], "nova:bridge:deposit:sign", deposit_id=did,
                             source_tx="ef" * 32, source_addr=user.address, source_amount=200_000.0))
     assert node.store.bridge_deposits[did]["status"] == "held"
     bad = _signed_tx(nodes[0], "nova:bridge:deposit:claim", deposit_id=did)
-    assert not node.validate_tx(bad)                       # 24h 内不可到账
+    assert not node.validate_tx(bad)                       # 1h 内不可到账
     node.store.bridge_deposits[did]["available_at"] = time.time() - 1
     _apply(node, _signed_tx(nodes[0], "nova:bridge:deposit:claim", deposit_id=did))
     assert node.store.bridge_deposits[did]["status"] == "minted"
+
+
+def test_large_deposit_tier_24h():
+    node = _node()
+    nodes = _nodes(node)
+    user = QuantumWallet()
+    _asset(node, nodes[0])
+    _apply(node, _signed_tx(nodes[0], "nova:bridge:deposit", data={"amount": 2_000_000.0},
+                            asset="nUSDT", source_chain="eth",
+                            source_tx="dd" * 32, source_addr=user.address))
+    did = next(reversed(node.store.bridge_deposits))
+    dep = node.store.bridge_deposits[did]
+    assert dep["available_at"] - dep["created_at"] == pytest.approx(24 * 3600)  # >100万 -> 24h
+    _apply(node, _signed_tx(nodes[1], "nova:bridge:deposit:sign", deposit_id=did,
+                            source_tx="dd" * 32, source_addr=user.address, source_amount=2_000_000.0))
+    _apply(node, _signed_tx(nodes[2], "nova:bridge:deposit:sign", deposit_id=did,
+                            source_tx="dd" * 32, source_addr=user.address, source_amount=2_000_000.0))
+    assert node.store.bridge_deposits[did]["status"] == "held"
+
+
+def test_deposit_cancel():
+    """无感跨链保护：延迟期间 user 本人可取消（撤回原链），他人不可取消，不铸造。"""
+    node = _node()
+    nodes = _nodes(node)
+    user = QuantumWallet()
+    other = QuantumWallet()
+    _fund(node, user.address)
+    _fund(node, other.address)
+    _asset(node, nodes[0])
+    _apply(node, _signed_tx(nodes[0], "nova:bridge:deposit", data={"amount": 200_000.0},
+                            asset="nUSDT", source_chain="bsc",
+                            source_tx="aa" * 32, source_addr=user.address))
+    did = next(reversed(node.store.bridge_deposits))
+    _apply(node, _signed_tx(nodes[1], "nova:bridge:deposit:sign", deposit_id=did,
+                            source_tx="aa" * 32, source_addr=user.address, source_amount=200_000.0))
+    _apply(node, _signed_tx(nodes[2], "nova:bridge:deposit:sign", deposit_id=did,
+                            source_tx="aa" * 32, source_addr=user.address, source_amount=200_000.0))
+    assert node.store.bridge_deposits[did]["status"] == "held"
+    # 他人不可取消
+    bad = _signed_tx(other, "nova:bridge:deposit:cancel", deposit_id=did)
+    assert not node.validate_tx(bad)
+    # 本人可取消 -> cancelled，不铸造
+    ok = _signed_tx(user, "nova:bridge:deposit:cancel", deposit_id=did)
+    assert node.validate_tx(ok)
+    node.apply_tx(ok)
+    assert node.store.bridge_deposits[did]["status"] == "cancelled"
+    assert "nUSDT" not in node.bridge.asset("nUSDT")["balances"].get(user.address, {})
+
+
+def test_review_delay_72h():
+    """单日单地址跨入累计达 1000 万 USDT：后续跨入进入风控审核（延迟 72h）。"""
+    node = _node()
+    nodes = _nodes(node)
+    user = QuantumWallet()
+    _asset(node, nodes[0])
+    # 第一笔 900 万：正常 minted
+    _apply(node, _signed_tx(nodes[0], "nova:bridge:deposit", data={"amount": 9_000_000.0},
+                            asset="nUSDT", source_chain="bsc",
+                            source_tx="11" * 32, source_addr=user.address))
+    did1 = next(reversed(node.store.bridge_deposits))
+    _apply(node, _signed_tx(nodes[1], "nova:bridge:deposit:sign", deposit_id=did1,
+                            source_tx="11" * 32, source_addr=user.address, source_amount=9_000_000.0))
+    _apply(node, _signed_tx(nodes[2], "nova:bridge:deposit:sign", deposit_id=did1,
+                            source_tx="11" * 32, source_addr=user.address, source_amount=9_000_000.0))
+    node.store.bridge_deposits[did1]["available_at"] = time.time() - 1
+    _apply(node, _signed_tx(nodes[0], "nova:bridge:deposit:claim", deposit_id=did1))
+    assert node.store.bridge_deposits[did1]["status"] == "minted"
+    # 第二笔 900 万：单地址累计 1800 万 > 1000 万 -> 审核态 72h
+    _apply(node, _signed_tx(nodes[0], "nova:bridge:deposit", data={"amount": 9_000_000.0},
+                            asset="nUSDT", source_chain="bsc",
+                            source_tx="22" * 32, source_addr=user.address))
+    did2 = next(reversed(node.store.bridge_deposits))
+    dep2 = node.store.bridge_deposits[did2]
+    assert dep2["review"] is True
+    assert dep2["available_at"] - dep2["created_at"] == pytest.approx(72 * 3600)
 
 
 # ---------------------------------------------------------------------------

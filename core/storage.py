@@ -173,6 +173,15 @@ class StateStore:
         self.faucet_daily: Dict[str, dict] = {}    # date -> {count, amount, ips}
         self.faucet_receipts: Dict[str, dict] = {} # receipt_id -> 发放记录
         self.faucet_seq: int = 0
+        # ---- v0.9 无感机制状态 ----
+        self.fomo_buys: Dict[str, list] = {}          # 反 FOMO：买入记录 [[ts, amount], ...]
+        self.fomo_cooldown: Dict[str, float] = {}     # 反 FOMO：冷却截止时间戳
+        self.stake_layers: Dict[str, list] = {}       # 质押过热保护：分层质押 [[ts, amount, weight], ...]
+        self.contract_call_daily: Dict[str, dict] = {}  # 动态手续费：地址->{UTC日: 合约调用次数}
+        self.daily_tx_count: Dict[str, int] = {}      # 负载自适应：UTC 自然日已确认交易数
+        self.curate_votes: Dict[str, dict] = {}       # 内容质量：策展投票 content_id -> {voter: ts}
+        self.curate_passed: Set[str] = set()          # 内容质量：已通过策展（>=3 票）
+        self.bridge_addr_daily: Dict[str, dict] = {}  # 跨链大额：日期->{地址: 跨入 USDT 累计}
 
     def to_dict(self):
         return {
@@ -325,6 +334,14 @@ class StateStore:
             "faucet_seq": self.faucet_seq,
             "ai_creators": self.ai_creators,
             "ai_daily_spend": self.ai_daily_spend,
+            "fomo_buys": self.fomo_buys,
+            "fomo_cooldown": self.fomo_cooldown,
+            "stake_layers": self.stake_layers,
+            "contract_call_daily": self.contract_call_daily,
+            "daily_tx_count": self.daily_tx_count,
+            "curate_votes": self.curate_votes,
+            "curate_passed": sorted(self.curate_passed),
+            "bridge_addr_daily": self.bridge_addr_daily,
         }
 
     def from_dict(self, d):
@@ -477,6 +494,17 @@ class StateStore:
         self.faucet_daily = {k: dict(v) for k, v in d.get("faucet_daily", {}).items()}
         self.faucet_receipts = dict(d.get("faucet_receipts", {}))
         self.faucet_seq = int(d.get("faucet_seq", 0))
+        self.fomo_buys = {k: [list(r) for r in v] for k, v in d.get("fomo_buys", {}).items()}
+        self.fomo_cooldown = {k: float(v) for k, v in d.get("fomo_cooldown", {}).items()}
+        self.stake_layers = {k: [list(layer) for layer in v] for k, v in d.get("stake_layers", {}).items()}
+        self.contract_call_daily = {k: {day: int(n) for day, n in v.items()}
+                                    for k, v in d.get("contract_call_daily", {}).items()}
+        self.daily_tx_count = {k: int(v) for k, v in d.get("daily_tx_count", {}).items()}
+        self.curate_votes = {k: {voter: float(ts) for voter, ts in v.items()}
+                             for k, v in d.get("curate_votes", {}).items()}
+        self.curate_passed = set(d.get("curate_passed", []))
+        self.bridge_addr_daily = {k: {addr: float(u) for addr, u in v.items()}
+                                    for k, v in d.get("bridge_addr_daily", {}).items()}
 
 
     def save(self, path):

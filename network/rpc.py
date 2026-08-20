@@ -51,6 +51,13 @@ def cors_middleware_factory(allow_origins=None):
 def setup_routes(app, node):
     app.middlewares.append(cors_middleware_factory(getattr(node, "cors_origins", None)))
     app.router.add_get('/api/status', node.rpc_status)
+    # ---------- v0.9 无感机制查询接口 ----------
+    app.router.add_get('/api/fomo/status', node.rpc_fomo_status)
+    app.router.add_get('/api/fees', node.rpc_fees)
+    app.router.add_get('/api/stake/protect', node.rpc_stake_protect)
+    app.router.add_get('/api/content/exposure/{addr}', node.rpc_content_exposure)
+    app.router.add_get('/api/content/feed', node.rpc_content_feed)
+    app.router.add_get('/api/load', node.rpc_load)
     app.router.add_post('/api/send', node.rpc_send)
     app.router.add_post('/api/deploy', node.rpc_deploy)
     app.router.add_post('/api/call', node.rpc_call)

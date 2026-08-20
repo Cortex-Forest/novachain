@@ -64,6 +64,15 @@ AI_MIN_BUDGET = 0.1              # 日预算下限（NOVA/日）
 AI_MAX_BUDGET = 10000.0          # 日预算上限（NOVA/日）
 TEXT_ESCROW = "0x_text_escrow"     # 文本交易合约保证金池
 REPUTATION_TIERS = ((90, "星核", "S"), (70, "星环", "A"), (40, "星芒", "B"), (0, "星尘", "C"))
+# 无感内容质量守护（v0.9）：曝光档位 / 新星池策展筛选
+EXPOSURE_HOT_REP = 80            # 信誉 >80：首页推荐池
+EXPOSURE_NORMAL_REP = 50         # 50-80：正常曝光
+EXPOSURE_RISING_REP = 30         # <30：新星池（需策展筛选）；30-50：新星池自动展示
+EXPOSURE_COMPLAINT_LIMIT = 3     # 近 30 天败诉投诉 >=3：仅主页展示
+EXPOSURE_COMPLAINT_WINDOW = 30 * 86400
+CURATE_VOTE_MIN = 3              # 新星池作品 >=3 位策展人赞成：进入推荐池
+CURATE_VOTER_REP = 70            # 策展人资格：信誉 >=70 或 质押 >=100 或 矿工
+CURATE_VOTER_STAKE = 100
 PIN_SIZE_GB = 0.001                 # 内容自动固定时的默认最小体积（0.001 GB）
 PIN_DURATION_DAYS = 30
 
@@ -634,6 +643,17 @@ class SocialFi:
                 return False
             return isinstance(tx.amount, (int, float)) and not isinstance(tx.amount, bool) \
                 and _amt(tx.amount) == _amt(c["price"])
+        if op == "nova:curate:vote":
+            # 新星池策展：仅策展人可投；仅可对信誉 <50 创作者的新作品投票；一人一票
+            if tx.amount != 0 or not self._curate_eligible(addr):
+                return False
+            target = d.get("target", "")
+            owner = self._content_owner(target)
+            if not owner or self.reputation(owner)["score"] >= EXPOSURE_NORMAL_REP:
+                return False
+            if addr in self.store.curate_votes.get(target, {}):
+                return False
+            return True
         return False
 
     def _cur_apply(self, tx, d):
@@ -661,7 +681,14 @@ class SocialFi:
             self.store.balances[self.economy.ECOSYSTEM_FUND] = \
                 self.store.balances.get(self.economy.ECOSYSTEM_FUND, 0) + eco_share
             c["owners"].append(addr)
-            self._record(tx, op, cur, f"收藏策展「{c['title']}」")    # ------------------------------------------------------------------
+            self._record(tx, op, cur, f"收藏策展「{c['title']}」")
+        elif op == "nova:curate:vote":
+            target = d["target"]
+            votes = self.store.curate_votes.setdefault(target, {})
+            votes[addr] = time.time()
+            if len(votes) >= CURATE_VOTE_MIN:
+                self.store.curate_passed.add(target)
+            self._record(tx, op, target, f"策展人 {addr[:10]}... 推荐新星池作品")    # ------------------------------------------------------------------
     # 7. 社交图谱与推荐引擎
     # ------------------------------------------------------------------
     def _graph_validate(self, d, tx):
@@ -799,7 +826,94 @@ class SocialFi:
             "addr": addr, "score": min(score, 100.0),
             "components": comp, "tier": tier_name, "grade": tier_grade,
             "fee_multiplier": 0.5 if score >= 80 else 1.0,
-        }    # ------------------------------------------------------------------
+        }
+
+    # ------------------------------------------------------------------
+    # 8.5 无感内容质量守护（曝光权重 / 新星池策展，v0.9）
+    # ------------------------------------------------------------------
+    def _lost_complaints(self, addr) -> int:
+        """近 30 天败诉投诉计数：创作者作为被投诉方（seller）且仲裁最终支持投诉方。"""
+        cutoff = time.time() - EXPOSURE_COMPLAINT_WINDOW
+        n = 0
+        for c in self.store.arb_cases.values():
+            if c.get("seller") != addr or float(c.get("filed_at", 0)) < cutoff:
+                continue
+            final = (c.get("second") or {}).get("result") or c.get("result")
+            if final == "buyer":
+                n += 1
+        return n
+
+    def exposure(self, addr) -> dict:
+        """曝光权重：完全由链上数据确定性计算，无人工干预；不删除/屏蔽任何内容。"""
+        rep = self.reputation(addr)["score"]
+        lost = self._lost_complaints(addr)
+        reasons = [f"信誉分 {rep}"]
+        if lost >= EXPOSURE_COMPLAINT_LIMIT:
+            tier, weight = "restricted", 0.05
+            reasons.append(f"近 30 天败诉投诉 {lost} 次：仅主页展示，不进入公共推荐")
+        elif rep > EXPOSURE_HOT_REP:
+            tier, weight = "hot", 1.0
+            reasons.append("高信誉创作者：自动进入首页推荐池")
+        elif rep >= EXPOSURE_NORMAL_REP:
+            tier, weight = "normal", 0.6
+            reasons.append("中等信誉创作者：正常曝光")
+        elif rep >= EXPOSURE_RISING_REP:
+            tier, weight = "rising_auto", 0.35
+            reasons.append("新创作者：进入新星池（自动展示，公平冷启动）")
+        else:
+            tier, weight = "rising", 0.2
+            reasons.append("低信誉创作者：新作品进入新星池，由社区策展人筛选")
+        return {"addr": addr, "tier": tier, "weight": weight,
+                "reputation": rep, "lost_complaints": lost, "reasons": reasons}
+
+    def _curate_eligible(self, addr) -> bool:
+        """社区策展人资格：矿工 / 质押 >=100 / 信誉 >=70。"""
+        if addr in self.store.miner_registry:
+            return True
+        if float(self.store.stakes.get(addr, 0)) >= CURATE_VOTER_STAKE:
+            return True
+        return self.reputation(addr)["score"] >= CURATE_VOTER_REP
+
+    def _content_owner(self, target) -> str:
+        p = self.store.graph_posts.get(target)
+        if p:
+            return p.get("addr", "")
+        t = self.store.text_assets.get(target)
+        if t:
+            return t.get("author", "")
+        c = self.store.curations.get(target)
+        if c:
+            return c.get("curator", "")
+        return ""
+
+    def content_feed(self, tier="hot", limit=50) -> list:
+        """推荐流：按创作者曝光档位过滤内容，权重越高越靠前；restricted 仅主页展示。"""
+        items = []
+        for pid, p in self.store.graph_posts.items():
+            exp = self.exposure(p.get("addr", ""))
+            items.append((exp, "post", pid, p.get("ts", 0)))
+        for tid, t in self.store.text_assets.items():
+            exp = self.exposure(t.get("author", ""))
+            items.append((exp, "text", tid, t.get("created_at", 0)))
+        for cid, c in self.store.curations.items():
+            exp = self.exposure(c.get("curator", ""))
+            items.append((exp, "curate", cid, c.get("created_at", 0)))
+        out = []
+        for exp, kind, obj_id, ts in items:
+            if exp["tier"] == "restricted":
+                continue
+            if tier == "hot":
+                if exp["tier"] != "hot" and obj_id not in self.store.curate_passed:
+                    continue
+            elif exp["tier"] != tier:
+                continue
+            out.append({"id": obj_id, "type": kind, "owner": exp["addr"],
+                        "tier": exp["tier"], "weight": exp["weight"], "ts": ts,
+                        "score": round(exp["weight"] * 100.0, 2)})
+        out.sort(key=lambda x: (-x["score"], -x["ts"]))
+        return out[:limit]
+
+    # ------------------------------------------------------------------
     # 9. 创作者债券
     # ------------------------------------------------------------------
     def bond_owed(self, bid) -> float:
@@ -1391,7 +1505,7 @@ class SocialFi:
         "nova:ach:issue": "_ach", "nova:ach:award": "_ach",
         "nova:market:create": "_mkt", "nova:market:bet": "_mkt", "nova:market:settle": "_mkt",
         "nova:blind:create": "_blind", "nova:blind:reveal": "_blind", "nova:blind:open": "_blind",
-        "nova:curate:create": "_cur", "nova:curate:buy": "_cur",
+        "nova:curate:create": "_cur", "nova:curate:buy": "_cur", "nova:curate:vote": "_cur",
         "nova:graph:post": "_graph", "nova:graph:follow": "_graph", "nova:graph:like": "_graph",
         "nova:bond:issue": "_bond", "nova:bond:buy": "_bond", "nova:bond:fund": "_bond",
         "nova:bond:redeem": "_bond",

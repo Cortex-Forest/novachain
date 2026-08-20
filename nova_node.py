@@ -32,6 +32,7 @@ from core.dex import Dex
 from core.governance import Governance
 from core.did import DID
 from core.subscription import Subscription
+from core.fomo import AntiFOMO
 from network.p2p import P2PNetwork
 from network.rpc import setup_routes
 from network.security import SecurityManager
@@ -70,6 +71,10 @@ class NovaNode:
         self.did = DID(self.store, self.economy)
         self.subscription = Subscription(self.store, self.economy)
         self.security = SecurityManager()
+        self.fomo = AntiFOMO(self.store)
+        # 无感负载自适应（v0.9）：重操作延迟队列（内存，节点重启后由用户重新提交）
+        self._load_queue = {}
+        self._load_queue_seq = 0
         self.chat = ChatStore()
         if state_file:
             self.chat.chat_file = (state_file[:-5] + "_chat.json"
@@ -111,6 +116,8 @@ class NovaNode:
             return False  # 恶意投诉名单：限制密文交易权限
         if self._is_stake_op(tx):
             if tx.data == "nova:stake":
+                if self.economy.stake_tier()[2]:
+                    return False  # 质押过热保护（v0.9）：全网质押/流通 >= 80%，暂停新质押
                 if tx.amount < self.economy.MIN_STAKE or tx.amount > self.economy.MAX_STAKE:
                     return False
                 if self.store.stakes.get(tx.sender, 0) + tx.amount > self.economy.MAX_STAKE:
@@ -169,7 +176,9 @@ class NovaNode:
         if not isinstance(tx.timestamp, (int, float)) or abs(time.time() - tx.timestamp) > 300: return False
         if not tx.signature or not tx.sender_public_key: return False
         if not verify_quantum_tx(tx.signing_data(), tx.signature, tx.sender_public_key, tx.sender): return False
-        return self.balances.get(tx.sender, 0) >= tx.amount + self.gas_of(tx.sender)
+        if not self.fomo.validate_buy(tx):
+            return False   # 反 FOMO：冷却期内拒绝买入类交易
+        return self.balances.get(tx.sender, 0) >= tx.amount + self.gas_for(tx)
 
     STAKE_OPS = ("nova:stake", "nova:unstake", "nova:claim")
     STORAGE_OPS = ("nova:storage:register", "nova:storage:pin", "nova:storage:claim",
@@ -511,7 +520,7 @@ class NovaNode:
 
     def _apply_storage_op(self, tx):
         addr = tx.sender
-        self.balances[addr] = self.balances.get(addr, 0) - self.gas_of(addr)
+        self.balances[addr] = self.balances.get(addr, 0) - self.gas_for(tx)
         d = json.loads(tx.data)
         if d.get("op") == "nova:storage:register":
             self.storage_net.register(addr, d["capacity_gb"])
@@ -619,7 +628,7 @@ class NovaNode:
 
     def _apply_storage_inc_op(self, tx):
         addr = tx.sender
-        self.balances[addr] = self.balances.get(addr, 0) - self.gas_of(addr)
+        self.balances[addr] = self.balances.get(addr, 0) - self.gas_for(tx)
         d = json.loads(tx.data)
         op = d.get("op")
         if op == "nova:storage:inc:file":
@@ -660,7 +669,7 @@ class NovaNode:
 
     def _apply_compute_op(self, tx):
         addr = tx.sender
-        self.balances[addr] = self.balances.get(addr, 0) - self.gas_of(addr)
+        self.balances[addr] = self.balances.get(addr, 0) - self.gas_for(tx)
         d = json.loads(tx.data)
         op = d.get("op")
         if op == "nova:compute:publish":
@@ -706,9 +715,9 @@ class NovaNode:
         # （此前只扣 gas，导致购买/触发金额凭空铸造）。
         # 其余 AI op 仅扣 gas；fund:spend 的金额由 AI 成长基金合约余额支付，不从个人余额扣。
         if op in ("nova:ai:work:buy", "nova:ai:trigger"):
-            self.balances[addr] = self.balances.get(addr, 0) - (tx.amount + self.gas_of(addr))
+            self.balances[addr] = self.balances.get(addr, 0) - (tx.amount + self.gas_for(tx))
         else:
-            self.balances[addr] = self.balances.get(addr, 0) - self.gas_of(addr)
+            self.balances[addr] = self.balances.get(addr, 0) - self.gas_for(tx)
         if op == "nova:ai:svc:register":
             self.ai_service.svc_register(addr, tx.txid, d)
         elif op == "nova:ai:svc:config":
@@ -731,54 +740,85 @@ class NovaNode:
     def _apply_arb_op(self, tx):
         """仲裁合约操作：金额随交易上链（质押/保证金），合约内部完成锁定与释放。"""
         addr = tx.sender
-        gas = self.gas_of(addr)
+        gas = self.gas_for(tx)
         self.balances[addr] = self.balances.get(addr, 0) - (tx.amount + gas)
         self.arbitration.apply_op(tx)
 
     def _apply_oracle_op(self, tx):
         addr = tx.sender
-        gas = self.gas_of(addr)
+        gas = self.gas_for(tx)
         self.balances[addr] = self.balances.get(addr, 0) - (tx.amount + gas)
         self.balances[self.economy.VALIDATOR_POOL] = self.balances.get(self.economy.VALIDATOR_POOL, 0) + gas
         self.oracle.apply_op(tx)
 
     def _apply_bridge_op(self, tx):
         addr = tx.sender
-        gas = self.gas_of(addr)
+        gas = self.gas_for(tx)
         self.balances[addr] = self.balances.get(addr, 0) - (tx.amount + gas)
         self.balances[self.economy.VALIDATOR_POOL] = self.balances.get(self.economy.VALIDATOR_POOL, 0) + gas
         self.bridge.apply_op(tx)
 
     def _apply_dex_op(self, tx):
         addr = tx.sender
-        gas = self.gas_of(addr)
+        gas = self.gas_for(tx)
         self.balances[addr] = self.balances.get(addr, 0) - (tx.amount + gas)
         self.balances[self.economy.VALIDATOR_POOL] = self.balances.get(self.economy.VALIDATOR_POOL, 0) + gas
         self.dex.apply_op(tx)
 
     def _apply_gov_op(self, tx):
         addr = tx.sender
-        gas = self.gas_of(addr)
+        gas = self.gas_for(tx)
         self.balances[addr] = self.balances.get(addr, 0) - (tx.amount + gas)
         self.balances[self.economy.VALIDATOR_POOL] = self.balances.get(self.economy.VALIDATOR_POOL, 0) + gas
         self.governance.apply_op(tx)
 
     def _apply_did_op(self, tx):
         addr = tx.sender
-        gas = self.gas_of(addr)
+        gas = self.gas_for(tx)
         self.balances[addr] = self.balances.get(addr, 0) - (tx.amount + gas)
         self.balances[self.economy.VALIDATOR_POOL] = self.balances.get(self.economy.VALIDATOR_POOL, 0) + gas
         self.did.apply_op(tx)
 
     def _apply_sub_op(self, tx):
         addr = tx.sender
-        gas = self.gas_of(addr)
+        gas = self.gas_for(tx)
         self.balances[addr] = self.balances.get(addr, 0) - (tx.amount + gas)
         self.balances[self.economy.VALIDATOR_POOL] = self.balances.get(self.economy.VALIDATOR_POOL, 0) + gas
         self.subscription.apply_op(tx)
 
+    def _is_any_op(self, tx) -> bool:
+        return (self._is_stake_op(tx) or self._is_storage_op(tx) or self._is_storage_inc_op(tx)
+                or self._is_compute_op(tx) or self._is_ai_op(tx) or self._is_socialfi_op(tx)
+                or self._is_arb_op(tx) or self._is_oracle_op(tx) or self._is_bridge_op(tx)
+                or self._is_dex_op(tx) or self._is_gov_op(tx) or self._is_did_op(tx)
+                or self._is_sub_op(tx))
+
+    def gas_for(self, tx) -> float:
+        """无感动态手续费（v0.9）：
+        - 普通转账 / 娱乐消费 / 合约部署 / 前 1000 次合约调用：固定 0.000001 NOVA
+        - 大额纯转账（单笔 >10 万 NOVA）：×100
+        - 高频合约调用（同地址单日 >1000 次，第 1001 次起）：×10
+        - 取高者不叠乘；先按档位算基准，再乘信誉折扣（fee_multiplier）
+        - 费率规则公开、任何人可经 /api/fees 查询。"""
+        base = self.economy.FIXED_GAS
+        mult = 1.0
+        if not self._is_any_op(tx) and tx.amount > self.economy.LARGE_TRANSFER_THRESHOLD:
+            mult = max(mult, self.economy.LARGE_TRANSFER_MULT)
+        if tx.receiver in self.contracts and tx.sender != "0x0000":
+            day = time.strftime("%Y-%m-%d", time.gmtime(tx.timestamp))
+            cnt = self.store.contract_call_daily.get(tx.sender, {}).get(day, 0)
+            if cnt >= self.economy.HIGH_FREQ_CALL_LIMIT:
+                mult = max(mult, self.economy.HIGH_FREQ_CALL_MULT)
+        gas = base * mult
+        try:
+            rep = self.socialfi.reputation(tx.sender)
+            gas *= rep["fee_multiplier"]
+        except Exception:
+            pass
+        return round(gas, 8)
+
     def gas_of(self, addr) -> float:
-        """声誉驱动的交易费：信誉分 >= 80 享受 50% 折扣。"""
+        """兼容旧接口：基础费率 × 信誉折扣（无 tx 上下文时使用）。"""
         try:
             rep = self.socialfi.reputation(addr)
             return round(self.economy.FIXED_GAS * rep["fee_multiplier"], 8)
@@ -796,9 +836,9 @@ class NovaNode:
               or self._is_arb_op(tx) or self._is_oracle_op(tx) or self._is_bridge_op(tx)
               or self._is_dex_op(tx) or self._is_gov_op(tx) or self._is_did_op(tx)
               or self._is_sub_op(tx)):
-            gas = self.gas_of(tx.sender)
+            gas = self.gas_for(tx)
         else:
-            gas = self.gas_of(tx.sender)  # 审计 M-14：与 apply_tx 实际扣费一致
+            gas = self.gas_for(tx)  # 审计 M-14：与 apply_tx 实际扣费一致
         self.store.tx_history[tx.txid] = {
             "txid": tx.txid,
             "sender": tx.sender,
@@ -810,15 +850,72 @@ class NovaNode:
             "confirmed_at": time.time(),
         }
 
+    # ------------------------------------------------------------------
+    # 无感负载自适应（v0.9）：负载档位 / 重操作排队 / 节点扩容激励
+    # ------------------------------------------------------------------
+    HEAVY_OPS = ("nova:frac:split", "nova:fan:issue")   # 重操作：NFT 铸造类（合约部署单独处理）
+
+    def _bump_daily_tx_count(self, tx: Tx):
+        """负载自适应：UTC 自然日已确认交易数（链上确定性负载指标，全节点一致）。"""
+        day = time.strftime("%Y-%m-%d", time.gmtime())
+        self.store.daily_tx_count[day] = int(self.store.daily_tx_count.get(day, 0)) + 1
+
+    def _load_delay(self) -> int:
+        """当前负载档位要求重操作排队的秒数；0 = 正常（即时处理）。"""
+        tier = self.economy.load_tier()
+        if tier >= 2:
+            return self.economy.HEAVY_QUEUE_DELAY_EXTREME
+        if tier == 1:
+            return self.economy.HEAVY_QUEUE_DELAY_HIGH
+        return 0
+
+    def _submit_heavy(self, tx: Tx = None, deploy_payload: dict = None):
+        """重操作提交：高/极端/灾难负载下自动排队（延迟提交，不拒绝）。
+        返回 (queued, eta, delay)。排队期间用户可继续其他操作，到期自动入链。"""
+        delay = self._load_delay()
+        if delay <= 0:
+            return False, 0, 0
+        self._load_queue_seq += 1
+        qid = f"q{self._load_queue_seq}"
+        self._load_queue[qid] = {
+            "qid": qid,
+            "kind": "deploy" if deploy_payload else "tx",
+            "tx": None if deploy_payload else tx.to_dict(),
+            "payload": deploy_payload,
+            "due": time.time() + delay,
+        }
+        return True, delay, delay
+
+    async def _load_queue_loop(self):
+        """到期自动提交排队中的重操作（普通转账/小额消费永不受影响）。"""
+        while True:
+            await asyncio.sleep(5)
+            try:
+                now = time.time()
+                ready = [qid for qid, q in self._load_queue.items() if q.get("due", 0) <= now]
+                for qid in ready:
+                    q = self._load_queue.pop(qid, None)
+                    if not q:
+                        continue
+                    if q["kind"] == "deploy":
+                        await self._execute_deploy(q["payload"])
+                    else:
+                        await self.broadcast_tx(Tx.from_dict(q["tx"]))
+            except Exception as e:
+                print(f"[LOAD] 队列处理失败: {e}")
+
     def _is_stake_op(self, tx: Tx) -> bool:
         return tx.data in self.STAKE_OPS and tx.sender == tx.receiver
 
     def _apply_stake_op(self, tx: Tx):
         addr = tx.sender
-        gas = self.gas_of(addr)
+        gas = self.gas_for(tx)
         if tx.data == "nova:stake":
             self.balances[addr] = self.balances.get(addr, 0) - (tx.amount + gas)
             self.store.stakes[addr] = self.store.stakes.get(addr, 0) + tx.amount
+            # 质押过热保护（v0.9）：按入账时全网档位给新质押层定权重（老质押不追减）
+            w = self.economy.stake_tier()[1]
+            self.store.stake_layers.setdefault(addr, []).append([tx.timestamp, float(tx.amount), w])
             # 超级节点自动注册为存储节点（激励系统，无需额外配置）
             self.storage_incentive.auto_register(addr)
             # 早期矿工注册 + 前置空投（随交易确定性复制到全节点）
@@ -827,6 +924,14 @@ class NovaNode:
                 self.store.miner_uptime[addr] = 0.0
                 if self.economy.early_airdrop(addr, "miner"):
                     print(f"[MINER] 已注册矿工（{len(self.store.miner_registry)} 位）: {addr[:12]}...")
+                # 灾难负载扩容激励（v0.9）：临时空投吸引更多节点加入（生态基金支付，锁定 3 年）
+                if self.economy.disaster_load():
+                    if self.balances.get(self.economy.ECOSYSTEM_FUND, 0) >= self.economy.SCALE_REWARD:
+                        self.balances[self.economy.ECOSYSTEM_FUND] -= self.economy.SCALE_REWARD
+                        self.store.locked_balances[addr] = {
+                            "amount": self.economy.SCALE_REWARD,
+                            "start_time": time.time(), "unlocked": 0}
+                        print(f"[SCALE] 灾难负载扩容激励：{addr[:12]}... +{self.economy.SCALE_REWARD} NOVA（锁定 3 年）")
         elif tx.data == "nova:unstake":
             self.balances[addr] = self.balances.get(addr, 0) - gas
             amt = min(tx.amount, self.store.stakes.get(addr, 0))
@@ -834,6 +939,25 @@ class NovaNode:
                 self.store.stakes[addr] = self.store.stakes.get(addr, 0) - amt
                 if self.store.stakes[addr] <= 0:
                     del self.store.stakes[addr]
+                # 分层质押按先进先出（FIFO）扣减
+                layers = self.store.stake_layers.get(addr)
+                if layers:
+                    remain = amt
+                    new_layers = []
+                    for layer in layers:
+                        if remain <= 0:
+                            new_layers.append(layer)
+                            continue
+                        if layer[1] <= remain:
+                            remain -= layer[1]
+                        else:
+                            layer[1] -= remain
+                            remain = 0
+                            new_layers.append(layer)
+                    if new_layers:
+                        self.store.stake_layers[addr] = new_layers
+                    else:
+                        self.store.stake_layers.pop(addr, None)
                 old = self.store.unbonding.get(addr, (0, 0))[0]
                 self.store.unbonding[addr] = (old + amt, time.time() + self.economy.UNBOND)
         elif tx.data == "nova:claim":
@@ -863,7 +987,9 @@ class NovaNode:
             self._apply_ai_op(tx)
             return
         if self._is_socialfi_op(tx):
-            self.balances[tx.sender] = self.balances.get(tx.sender, 0) - self.gas_of(tx.sender)
+            self.balances[tx.sender] = self.balances.get(tx.sender, 0) - self.gas_for(tx)
+            if self.fomo.is_buy_tx(tx):
+                self.fomo.record_buy(tx)   # 反 FOMO：记录买入并触发冷却
             self.socialfi.apply_op(tx)
             return
         if self._is_arb_op(tx):
@@ -888,10 +1014,15 @@ class NovaNode:
             self._apply_sub_op(tx)
             return
         old_balance = self.balances.get(tx.receiver, 0)
-        # 审计 M-14：扣费与 validate_tx 一致（gas_of 含信誉折扣），避免高信誉地址余额被扣为负
-        gas = self.gas_of(tx.sender)
+        # 审计 M-14：扣费与 validate_tx 一致（gas_for 含信誉折扣与动态档位），避免高信誉地址余额被扣为负
+        gas = self.gas_for(tx)
         self.balances[tx.sender] = self.balances.get(tx.sender, 0) - (tx.amount + gas)
         self.balances[tx.receiver] = old_balance + tx.amount
+        if tx.receiver in self.contracts and tx.sender != "0x0000":
+            # 动态手续费：同地址单日合约调用计数（UTC，按交易时间戳，跨节点确定性）
+            day = time.strftime("%Y-%m-%d", time.gmtime(tx.timestamp))
+            cc = self.store.contract_call_daily.setdefault(tx.sender, {})
+            cc[day] = int(cc.get(day, 0)) + 1
 
         reward = self.economy.block_reward() + self.economy.FIXED_GAS
         pool = self.balances.get(self.economy.VALIDATOR_POOL, 0)
@@ -944,6 +1075,7 @@ class NovaNode:
             self.store.dag.add(tx.txid)
             self.apply_tx(tx)
             self._record_tx(tx)
+            self._bump_daily_tx_count(tx)
             await self.p2p.gossip({"type":"new_tx","tx":tx.to_dict()})
 
     async def process_message(self, msg, peer, writer=None):
@@ -955,6 +1087,7 @@ class NovaNode:
                 self.store.dag.add(tx.txid)
                 self.apply_tx(tx)
                 self._record_tx(tx)
+                self._bump_daily_tx_count(tx)
                 await self.p2p.gossip(msg, exclude=[peer])
         elif mtype == "hello":
             peer_id = msg.get("node_id")
@@ -1103,6 +1236,107 @@ class NovaNode:
         return None
 
     # ---------- RPC 接口 ----------
+    async def rpc_fomo_status(self, req):
+        """GET /api/fomo/status?addr=：反 FOMO 冷却状态 + 温和提示文案（仅本地址自查，不公开名单）。"""
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        addr = req.query.get("addr", "")
+        if not ADDRESS_RE.match(addr):
+            return web.json_response({"error": "地址格式无效"}, status=400)
+        return web.json_response(self.fomo.status(addr))
+
+    async def rpc_fees(self, req):
+        """GET /api/fees?addr=：无感动态手续费费率表 + 指定地址当前适用档位。"""
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        ec = self.economy
+        out = {
+            "base_gas": ec.FIXED_GAS,
+            "large_transfer_threshold": ec.LARGE_TRANSFER_THRESHOLD,
+            "large_transfer_mult": ec.LARGE_TRANSFER_MULT,
+            "high_freq_call_limit": ec.HIGH_FREQ_CALL_LIMIT,
+            "high_freq_call_mult": ec.HIGH_FREQ_CALL_MULT,
+            "reputation_discount": {"threshold": 80, "mult": 0.5},
+            "rules": [
+                "普通转账 / 娱乐消费 / 合约部署 / 前 1000 次合约调用：固定 0.000001 NOVA，永不改变",
+                f"大额纯转账（单笔 >{ec.LARGE_TRANSFER_THRESHOLD:,.0f} NOVA）：手续费 ×{ec.LARGE_TRANSFER_MULT:g}",
+                f"高频合约调用（同地址单日 >{ec.HIGH_FREQ_CALL_LIMIT} 次）：第 {ec.HIGH_FREQ_CALL_LIMIT + 1} 次起手续费 ×{ec.HIGH_FREQ_CALL_MULT:g}",
+                "同笔同时命中多档时取最高倍率（不叠乘）",
+                "以上倍率先按档位计算，再乘信誉折扣（信誉 ≥80 享 50% 折扣）",
+                "所有费率变化写入合约规则，任何人可查询",
+            ],
+        }
+        addr = req.query.get("addr", "")
+        if ADDRESS_RE.match(addr):
+            day = time.strftime("%Y-%m-%d", time.gmtime())
+            cnt = self.store.contract_call_daily.get(addr, {}).get(day, 0)
+            rep = self.socialfi.reputation(addr)
+            out["addr"] = addr
+            out["addr_status"] = {
+                "reputation": rep["score"],
+                "fee_multiplier": rep["fee_multiplier"],
+                "contract_calls_today": cnt,
+                "high_freq_active": cnt >= ec.HIGH_FREQ_CALL_LIMIT,
+            }
+        return web.json_response(out)
+
+    async def rpc_stake_protect(self, req):
+        """GET /api/stake/protect：全网质押过热保护状态（比例/档位/新质押权重/是否暂停）。"""
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        tier, weight, paused = self.economy.stake_tier()
+        ec = self.economy
+        return web.json_response({
+            "total_stake": round(self.economy.raw_total_stake(), 4),
+            "locked_total": round(self.economy.locked_total(), 4),
+            "circulating": round(self.economy.circulating(), 4),
+            "stake_ratio": round(self.economy.stake_ratio(), 6),
+            "tier": tier,
+            "new_stake_weight": weight,
+            "new_staking_paused": paused,
+            "thresholds": {"low": ec.STAKE_TIER_LOW, "mid": ec.STAKE_TIER_MID, "high": ec.STAKE_TIER_HIGH},
+            "weights": {"normal": 1.0, "warm": ec.STAKE_WEIGHT_LOW, "hot": ec.STAKE_WEIGHT_MID},
+            "message": ("全网质押比例已超过 80%，为保护网络流动性，暂时停止新质押。\n"
+                        "您的已有质押继续获得收益，可随时退出。") if paused else "",
+        })
+
+    async def rpc_content_exposure(self, req):
+        """GET /api/content/exposure/{addr}：创作者曝光权重 + 原因（链上确定性，随时可自查）。"""
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        addr = req.match_info.get("addr", "")
+        return web.json_response(self.socialfi.exposure(addr))
+
+    async def rpc_content_feed(self, req):
+        """GET /api/content/feed?tier=hot：推荐流（按曝光权重排序；restricted 仅主页展示）。"""
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        tier = req.query.get("tier", "hot")
+        try:
+            limit = min(int(req.query.get("limit", 50) or 50), 200)
+        except (TypeError, ValueError):
+            limit = 50
+        return web.json_response({"tier": tier, "items": self.socialfi.content_feed(tier, limit)})
+
+    async def rpc_load(self, req):
+        """GET /api/load：负载档位 + 当日交易数 + 重操作排队信息。"""
+        guard = await self._rpc_guard(req)
+        if guard: return guard
+        ec = self.economy
+        day = time.strftime("%Y-%m-%d", time.gmtime())
+        queue = [{"qid": q["qid"], "kind": q["kind"],
+                  "eta": max(0, int(q["due"] - time.time()))}
+                 for q in self._load_queue.values()]
+        return web.json_response({
+            "day": day,
+            "tx_today": int(self.store.daily_tx_count.get(day, 0)),
+            "tier": ec.load_tier(),
+            "thresholds": {"high": ec.LOAD_HIGH, "extreme": ec.LOAD_EXTREME, "disaster": ec.LOAD_DISASTER},
+            "heavy_queue_delay": {"high": ec.HEAVY_QUEUE_DELAY_HIGH, "extreme": ec.HEAVY_QUEUE_DELAY_EXTREME},
+            "scale_boost_active": ec.disaster_load(),
+            "queue": queue,
+        })
+
     async def rpc_status(self, req):
         guard = await self._rpc_guard(req)
         if guard: return guard
@@ -1154,15 +1388,37 @@ class NovaNode:
         bytecode = str(b["bytecode"])
         if not bytecode or len(bytecode) > self.security.MAX_CONTRACT_SIZE:
             return web.json_response({"error":"bytecode 无效或过大"}, status=400)
-        addr = deploy_address(bytecode)
         creator = b.get("creator", "")
         if creator:
-            sig_msg = "deploy:{0}:{1}".format(addr, bytecode)
+            sig_msg = "deploy:{0}:{1}".format(deploy_address(bytecode), bytecode)
             if not verify_quantum_tx(sig_msg, b.get("signature", ""),
                                      b.get("sender_public_key", ""), creator):
                 return web.json_response({"error":"creator 签名验证失败"}, status=400)
             if creator in self.store.contract_creator.values():
                 return web.json_response({"error":"该地址已有合约"}, status=400)
+        payload = {"bytecode": bytecode, "creator": creator,
+                   "signature": b.get("signature", ""),
+                   "sender_public_key": b.get("sender_public_key", "")}
+        # 无感负载自适应：高/极端/灾难负载下合约部署自动排队（不拒绝，预计到账时间可见）
+        queued, eta, delay = self._submit_heavy(None, deploy_payload=payload)
+        if queued:
+            return web.json_response({"status": "queued", "queued": True, "eta": eta,
+                                      "message": f"您的合约正在部署中，预计 {delay} 秒后完成"})
+        result = await self._execute_deploy(payload)
+        return web.json_response(result)
+
+    async def _execute_deploy(self, payload):
+        """执行合约部署（原 rpc_deploy 核心逻辑，供排队到期后调用）。"""
+        bytecode = payload["bytecode"]
+        addr = deploy_address(bytecode)
+        creator = payload.get("creator", "")
+        if creator:
+            sig_msg = "deploy:{0}:{1}".format(addr, bytecode)
+            if not verify_quantum_tx(sig_msg, payload.get("signature", ""),
+                                     payload.get("sender_public_key", ""), creator):
+                return {"error": "creator 签名验证失败"}
+            if creator in self.store.contract_creator.values():
+                return {"error": "该地址已有合约"}
         tx = Tx("0x0000", addr, 0, [], bytecode)
         self.store.dag.add(tx.txid)
         self.store.contracts[addr] = bytecode
@@ -1180,7 +1436,7 @@ class NovaNode:
                 self.balances[creator] = self.balances.get(creator, 0) + rwd
                 self.store.deploy_count += 1
         await self.broadcast_tx(tx, system=True)
-        return web.json_response({"contract":addr,"txid":tx.txid,"reward":rwd})
+        return {"contract": addr, "txid": tx.txid, "reward": rwd}
 
     async def rpc_call(self, req):
         guard = await self._rpc_guard(req)
@@ -2035,7 +2291,18 @@ class NovaNode:
         tx = Tx(b["addr"], b["addr"], amt, [], b["data"],
                 b.get("sender_public_key", ""), b.get("signature", ""), timestamp=ts)
         if not self.validate_tx(tx):
+            # 反 FOMO 冷却提示：若因买入冷却被拒，返回温和提示文案
+            if self.fomo.is_buy_tx(tx) and self.fomo.in_cooldown(tx.sender):
+                return web.json_response({"error": self.fomo.status(tx.sender)["message"],
+                                          "code": "fomo_cooldown"}, status=400)
             return web.json_response({"error": "交易校验失败（签名/规则）"}, status=400)
+        # 无感负载自适应：高/极端/灾难负载下 NFT 铸造类重操作自动排队（不拒绝）
+        d = self._parse_op_data(tx)
+        if isinstance(d, dict) and d.get("op") in self.HEAVY_OPS:
+            queued, eta, delay = self._submit_heavy(tx)
+            if queued:
+                return web.json_response({"status": "queued", "queued": True, "eta": eta,
+                                          "message": f"NFT 铸造请求正在排队，预计 {delay} 秒后完成"})
         await self.broadcast_tx(tx)
         ev = self.store.socialfi_events.get(tx.txid, {})
         return web.json_response({"status": "ok", "txid": tx.txid, **ev})
@@ -2676,6 +2943,7 @@ class NovaNode:
         asyncio.create_task(self._maintenance_loop())
         asyncio.create_task(self._storage_monitor_loop())
         asyncio.create_task(self.consensus.checkpoint_loop())
+        asyncio.create_task(self._load_queue_loop())
         try:
             await self.p2p.server.serve_forever()
         finally:
