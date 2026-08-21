@@ -27,7 +27,7 @@ ENV PYTHONUNBUFFERED=1 \
 # 如需进一步瘦身，可在构建 liboqs 后拆分为多阶段，把编译工具剔除出最终镜像。
 ARG NOVA_OQS=1
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential cmake git ca-certificates \
+        build-essential cmake git ca-certificates libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -35,6 +35,25 @@ WORKDIR /app
 # 依赖分层缓存：先装依赖，源码变更不影响这一层
 COPY requirements.txt ./
 RUN pip install -r requirements.txt
+
+# 显式预编译并安装 liboqs 系统库（版本与 liboqs-python 匹配）。
+# 比 liboqs-python 的「运行时自动下载编译」更可靠（官方 Dockerfile 同款做法）。
+RUN if [ "$NOVA_OQS" = "1" ]; then \
+        git clone --depth 1 --branch 0.16.0 https://github.com/open-quantum-safe/liboqs /tmp/liboqs \
+        && cmake -S /tmp/liboqs -B /tmp/liboqs/build \
+             -DBUILD_SHARED_LIBS=ON \
+             -DOQS_BUILD_ONLY_LIB=ON \
+             -DCMAKE_BUILD_TYPE=Release \
+             -DCMAKE_INSTALL_PREFIX=/usr/local \
+        && cmake --build /tmp/liboqs/build --parallel 4 \
+        && cmake --build /tmp/liboqs/build --target install \
+        && rm -rf /tmp/liboqs; \
+    fi
+
+# 让 liboqs-python 直接加载系统 liboqs（避免运行时自动编译）
+ENV LD_LIBRARY_PATH=/usr/local/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+
+# 安装 liboqs-python 并验证 Dilithium5 可用
 RUN if [ "$NOVA_OQS" = "1" ]; then \
         pip install liboqs-python==0.16.0 \
         && python -c "import oqs; s = oqs.Signature('Dilithium5'); s.free(); print('liboqs OK, version', oqs.get_liboqs_version())"; \
