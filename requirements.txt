@@ -11,5 +11,7 @@ yarl==1.24.5
 pyOpenSSL==26.4.0
 
 # 抗量子签名（生产必装；未安装时自动回退 Ed25519）
-# 本机未安装 oqs，无法锁定版本；安装后请按 `pip freeze` 补全：
-# oqs==<version>
+# 注意：PyPI 包名是 liboqs-python（import oqs）；PyPI 上的 `oqs` 是另一个无关包，装错会静默回退 Ed25519。
+# 首次 import oqs 会自动下载并编译 liboqs（需 gcc/cmake/git）。
+# 本机未安装，无法锁定版本；安装后请按 `pip freeze` 补全：
+# liboqs-python==0.16.0

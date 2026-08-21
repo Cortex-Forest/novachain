@@ -5,7 +5,7 @@
 
 ## 安装依赖
 pip install -r requirements.txt   # 核心依赖（含 pyOpenSSL）
-pip install oqs                    # 生产必装：启用 CRYSTALS-Dilithium5 抗量子签名
+pip install liboqs-python         # 生产必装：启用 CRYSTALS-Dilithium5 抗量子签名
 
 ## 生成 TLS 证书
 python cert_gen.py
@@ -49,11 +49,22 @@ python -c "from core.crypto import QuantumWallet; w = QuantumWallet(); print('�
 ## 部署公共节点并接入前端 PUBLIC_RPC
 前端 `../novachain-web/apps-common.js` 顶部 `PUBLIC_RPC` 需填入**公网可达且 CORS 开放**的节点地址，线上站点才能真正跑链上数据（也可用 `?rpc=` URL 参数或设置页临时指定）。
 1. 准备一台有公网 IP 的服务器（VPS），放行端口（示例：P2P 9000 / RPC 8080，生产建议 443 反向代理 + TLS）。
-2. `pip install -r requirements.txt && pip install oqs`，再 `python cert_gen.py` 生成证书。
+2. `pip install -r requirements.txt && pip install liboqs-python`，再 `python cert_gen.py` 生成证书。
 3. 启动公共节点（CORS 白名单填前端站点来源，如 `https://xxx.vercel.app`）：
    `python nova_node.py --host 0.0.0.0 --p2p 9000 --rpc 8080 --cors-origins https://xxx.vercel.app`
 4. 验证：`curl -s https://你的域名:8080/api/status`，且带 `Origin` 请求时响应头含 `Access-Control-Allow-Origin: https://xxx.vercel.app`。
 5. 把 `https://你的域名:8080` 填入 `apps-common.js` 的 `PUBLIC_RPC`（或通过 `?rpc=` / 设置页临时指定）。
+
+## Docker 部署（Docker Hub）
+镜像：`spurtniwa/nova`。镜像内置抗量子签名（liboqs-python + Dilithium5，构建期预编译，运行时无需联网/编译）、TLS 自签证书自动生成（`docker-entrypoint.sh`）、状态持久化与健康检查。
+- **构建并推送 Docker Hub**：`\scripts\docker_push.ps1 -Tag v0.11`（首次构建会编译 liboqs，约 5~15 分钟属正常；`-SkipOqs` 可跳过抗量子以加速构建，但会回退 Ed25519，仅测试用）。
+- **本地一键启动**：`docker compose up -d --build`；链状态 / TLS 证书 / 聊天索引存于 `nova_data` 卷（容器内 `/data`）。
+- **CORS 白名单**：`.env` 设 `NOVA_CORS_ORIGINS=https://xxx.vercel.app`（本地演示可 `*`）。
+- **PoS 验证者**：`.env` 设 `NOVA_VALIDATOR_KEY=<hex>`，并在 `docker-compose.yml` 中放开 `--validator-key` 两行、把 `--consensus` 改为 `pos`。
+- **裸容器运行**：
+  `docker run -d --name nova-node -p 8080:8080 -p 9000:9000 -v nova_data:/data -e NOVA_CORS_ORIGINS=https://xxx.vercel.app spurtniwa/nova:latest`
+- **验证**：`curl -s http://127.0.0.1:8080/api/status`，应返回 `quantum_safe: true` 与 `algorithm: CRYSTALS-Dilithium5`。
+- **GitHub Actions 自动构建（推荐，免本地 Docker）**：推送到 GitHub 后，`.github/workflows/docker-publish.yml` 会在 push 到 main、打 `v*` 标签或手动触发时自动构建并推送到 Docker Hub。首次只需在仓库 **Settings → Secrets → Actions** 配置 `DOCKERHUB_USERNAME` 与 `DOCKERHUB_TOKEN`（Docker Hub 个人 Access Token，权限 Read/Write/Delete），之后 `git push` / `git tag v0.11 && git push --tags` 即自动出镜像。
 
 ## 经济参数
 - 总量：8100万 NOVA（锁死，永不增发）
@@ -87,7 +98,7 @@ python -c "from core.crypto import QuantumWallet; w = QuantumWallet(); print('�
 - 部署说明见 `../novachain-web/README_DEPLOY.md`：Vercel 导入目录后即可静态托管全部页面。
 
 ## 安全说明（重要）
-- 未安装 oqs 时，签名自动回退为 Ed25519（RFC 8032，Python 与浏览器 WebCrypto 实现）。Ed25519 **不是**抗量子算法；生产环境必须安装 oqs（pip install oqs）以启用 CRYSTALS-Dilithium5。节点 /api/status 会如实返回当前算法与 quantum_safe 状态。
+- 未安装 oqs（即 `liboqs-python`）时，签名自动回退为 Ed25519（RFC 8032，Python 与浏览器 WebCrypto 实现）。Ed25519 **不是**抗量子算法；生产环境必须安装（`pip install liboqs-python`）以启用 CRYSTALS-Dilithium5。**注意**：PyPI 上名为 `oqs` 的包是另一个无关项目，装错会静默回退 Ed25519（代码不会报错），务必核对包名。节点 /api/status 会如实返回当前算法与 quantum_safe 状态。
 - 交易签名基于规范化字符串：sender + receiver + 金额（8 位小数去尾零）+ 时间戳 + parents + data + 公钥。时间戳由客户端提供，节点校验 ±5 分钟窗口，缺失/过期时间戳的交易会被拒绝。
 - 金额必须为正数（合约调用可为 0）且不超过总供应量 8100 万 NOVA，字符串、NaN、Infinity 等非法金额一律拒绝。
 

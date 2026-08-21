@@ -1,0 +1,83 @@
+# ============================================================
+#  Nova Chain — Git 上自动构建并推送 Docker Hub
+#  ------------------------------------------------------------
+#  触发方式：
+#    1. push 到 main/master            -> 构建并推送 latest
+#    2. 打标签 v*（如 v0.11）           -> 构建并推送 v0.11 + latest
+#    3. 手动触发（Actions 页 Run workflow）-> 可自定义 tag / 跳过抗量子
+#
+#  首次使用需在 GitHub 仓库配置 2 个 Secrets（Settings -> Secrets
+#  and variables -> Actions -> New repository secret）：
+#    DOCKERHUB_USERNAME  = 你的 Docker Hub 用户名（如 spurtniwa）
+#    DOCKERHUB_TOKEN     = Docker Hub Access Token
+#      （https://hub.docker.com -> Account Settings -> Personal
+#        Access Tokens -> Generate New Token，权限选 Read/Write/Delete）
+# ============================================================
+
+name: Docker 自动构建推送
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: '手动指定的镜像 tag（留空则用 latest）'
+        required: false
+        default: 'latest'
+      skip_oqs:
+        description: '跳过抗量子签名（构建更快，回退 Ed25519，仅测试）'
+        type: boolean
+        default: false
+
+env:
+  IMAGE: spurtniwa/nova   # 改成你的 <dockerhub用户名>/<镜像名>
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write      # 若改为推 GHCR 需要；推 Docker Hub 无需，保留无害
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # 如需多平台（例如服务器是 arm64），取消下面注释并在推送步骤打开 platforms：
+      # - name: Set up QEMU
+      #   uses: docker/setup-qemu-action@v3
+
+      - name: 登录 Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: 计算镜像标签
+        id: meta
+        run: |
+          if [ -n "${{ github.event.inputs.image_tag }}" ]; then
+            echo "tags=${IMAGE}:${{ github.event.inputs.image_tag }}" >> "$GITHUB_OUTPUT"
+          elif [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            echo "tags=${IMAGE}:${GITHUB_REF_NAME},${IMAGE}:latest" >> "$GITHUB_OUTPUT"
+          else
+            echo "tags=${IMAGE}:latest" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 构建并推送
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          build-args: |
+            NOVA_OQS=${{ github.event.inputs.skip_oqs == 'true' && '0' || '1' }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # 多平台构建示例（会明显拉长构建时间，QEMU 模拟编译慢）：
+          # platforms: linux/amd64,linux/arm64

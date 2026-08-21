@@ -1,0 +1,58 @@
+# Nova Chain 节点 — docker compose 示例
+# 用法：
+#   1) 在 .env 里配置（可选）：
+#        NOVA_CORS_ORIGINS=https://your-app.vercel.app
+#        NOVA_VALIDATOR_KEY=<hex 32字节，pos 模式必填>
+#   2) docker compose up -d --build
+#   3) 验证：curl -s http://127.0.0.1:8080/api/status
+services:
+  nova-node:
+    image: spurtniwa/nova:latest
+    build:
+      context: .
+      args:
+        NOVA_OQS: "1"   # 0 = 跳过抗量子签名（构建更快，回退 Ed25519，仅测试）
+    container_name: nova-node
+    restart: unless-stopped
+    ports:
+      - "9000:9000"   # P2P
+      - "8080:8080"   # RPC
+    volumes:
+      - nova_data:/data   # 链状态 + TLS 证书持久化
+    environment:
+      # CORS 白名单（逗号分隔）：填前端站点来源，如 https://xxx.vercel.app
+      # 留空 = 禁止浏览器跨域读取（安全默认）；本地演示可设 '*'
+      NOVA_CORS_ORIGINS: "${NOVA_CORS_ORIGINS:-}"
+    command:
+      - --host
+      - 0.0.0.0
+      - --p2p
+      - "9000"
+      - --rpc
+      - "8080"
+      # 共识模式：checkpoint（默认）/ pos（质押加权出块 + 区块签名）
+      - --consensus
+      - checkpoint
+      # PoS 验证者私钥（pos 模式必填）。取消下面两行注释，并在 .env 设置 NOVA_VALIDATOR_KEY
+      # - --validator-key
+      # - "${NOVA_VALIDATOR_KEY:-}"
+      # 加入已有网络：填种子节点，如 1.2.3.4:9000（默认不启用状态快照同步）
+      # - --seed
+      # - "${NOVA_SEED:-}"
+      # 接受种子节点状态快照同步（默认关闭，防状态接管；主网节点请勿随意开启）
+      # - --sync-from-seeds
+      - --state
+      - /data/chain_state.json
+      - --cert
+      - /data/cert.pem
+      - --key
+      - /data/key.pem
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/api/status', timeout=4).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+
+volumes:
+  nova_data:
