@@ -43,17 +43,24 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       # 如需多平台（例如服务器是 arm64），取消下面注释并在推送步骤打开 platforms：
       # - name: Set up QEMU
-      #   uses: docker/setup-qemu-action@v3
+      #   uses: docker/setup-qemu-action@v4
+
+      - name: 检查 Docker Hub secrets 是否配置
+        run: |
+          if [ -z "${{ secrets.DOCKERHUB_USERNAME }}" ] || [ -z "${{ secrets.DOCKERHUB_TOKEN }}" ]; then
+            echo "::error::未检测到 DOCKERHUB_USERNAME / DOCKERHUB_TOKEN，请到仓库 Settings -> Secrets and variables -> Actions 配置后再运行"
+            exit 1
+          fi
 
       - name: 登录 Docker Hub
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -70,7 +77,7 @@ jobs:
           fi
 
       - name: 构建并推送
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: true
