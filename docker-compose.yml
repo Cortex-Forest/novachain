@@ -7,7 +7,7 @@
 #   3) 验证：curl -s http://127.0.0.1:8080/api/status
 services:
   nova-node:
-    image: spurtniwa/nova:latest
+    image: ghcr.io/cortex-forest/novachain:latest
     build:
       context: .
       args:

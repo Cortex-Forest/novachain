@@ -2,18 +2,18 @@
 # ============================================================
 #  Nova Chain 节点镜像（抗量子版）
 #  ------------------------------------------------------------
-#  构建:        docker build -t spurtniwa/nova:latest .
-#  跳过抗量子:  docker build --build-arg NOVA_OQS=0 -t spurtniwa/nova:latest .
+#  构建:        docker build -t ghcr.io/cortex-forest/novachain:latest .
+#  跳过抗量子:  docker build --build-arg NOVA_OQS=0 -t ghcr.io/cortex-forest/novachain:latest .
 #               （构建更快，但签名回退 Ed25519，非抗量子，仅测试用）
 #  运行:        docker run -d -p 8080:8080 -p 9000:9000 -v nova_data:/data \
-#                 spurtniwa/nova:latest
+#                 ghcr.io/cortex-forest/novachain:latest
 # ============================================================
 
 FROM python:3.14-slim
 
 LABEL org.opencontainers.image.title="Nova Chain Node" \
       org.opencontainers.image.description="Nova Chain 抗量子创作者公链节点（CRYSTALS-Dilithium5）" \
-      org.opencontainers.image.source="https://github.com/spurtniwa/nova" \
+      org.opencontainers.image.source="https://github.com/Cortex-Forest/novachain" \
       org.opencontainers.image.version="0.11"
 
 ENV PYTHONUNBUFFERED=1 \

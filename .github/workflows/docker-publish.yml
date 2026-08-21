@@ -1,20 +1,17 @@
 # ============================================================
-#  Nova Chain — Git 上自动构建并推送 Docker Hub
+#  Nova Chain — Git 上自动构建并推送 GHCR（GitHub Container Registry）
 #  ------------------------------------------------------------
 #  触发方式：
 #    1. push 到 main/master            -> 构建并推送 latest
 #    2. 打标签 v*（如 v0.11）           -> 构建并推送 v0.11 + latest
 #    3. 手动触发（Actions 页 Run workflow）-> 可自定义 tag / 跳过抗量子
 #
-#  首次使用需在 GitHub 仓库配置 2 个 Secrets（Settings -> Secrets
-#  and variables -> Actions -> New repository secret）：
-#    DOCKERHUB_USERNAME  = 你的 Docker Hub 用户名（如 spurtniwa）
-#    DOCKERHUB_TOKEN     = Docker Hub Access Token
-#      （https://hub.docker.com -> Account Settings -> Personal
-#        Access Tokens -> Generate New Token，权限选 Read/Write/Delete）
+#  无需配置任何 Secrets！使用 GitHub 自动注入的 GITHUB_TOKEN，
+#  构建产物自动推送到 ghcr.io/cortex-forest/novachain。
+#  拉取：docker pull ghcr.io/cortex-forest/novachain:latest
 # ============================================================
 
-name: Docker 自动构建推送
+name: Docker 自动构建推送 (GHCR)
 
 on:
   push:
@@ -32,14 +29,14 @@ on:
         default: false
 
 env:
-  IMAGE: spurtniwa/nova   # 改成你的 <dockerhub用户名>/<镜像名>
+  IMAGE: ghcr.io/cortex-forest/novachain   # = ghcr.io/<GitHub组织或用户名>/<仓库名>（小写）
 
 jobs:
   build-push:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write      # 若改为推 GHCR 需要；推 Docker Hub 无需，保留无害
+      packages: write      # 推送 GHCR 所需
 
     steps:
       - name: Checkout
@@ -52,18 +49,13 @@ jobs:
       # - name: Set up QEMU
       #   uses: docker/setup-qemu-action@v4
 
-      - name: 检查 Docker Hub secrets 是否配置
-        run: |
-          if [ -z "${{ secrets.DOCKERHUB_USERNAME }}" ] || [ -z "${{ secrets.DOCKERHUB_TOKEN }}" ]; then
-            echo "::error::未检测到 DOCKERHUB_USERNAME / DOCKERHUB_TOKEN，请到仓库 Settings -> Secrets and variables -> Actions 配置后再运行"
-            exit 1
-          fi
-
-      - name: 登录 Docker Hub
+      # 登录 GHCR：用 GitHub 自动注入的 GITHUB_TOKEN，零配置
+      - name: 登录 GitHub Container Registry
         uses: docker/login-action@v4
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: 计算镜像标签
         id: meta
