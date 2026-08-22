@@ -37,7 +37,8 @@ COPY requirements.txt ./
 RUN pip install -r requirements.txt
 
 # 显式预编译并安装 liboqs 系统库（版本与 liboqs-python 匹配）。
-# 比 liboqs-python 的「运行时自动下载编译」更可靠（官方 Dockerfile 同款做法）。
+# 尽力而为：失败不阻断构建（节点会回退 Ed25519，/api/status 如实显示），
+# 保证镜像先上线；诊断信息见构建日志。
 RUN if [ "$NOVA_OQS" = "1" ]; then \
         git clone --depth 1 --branch 0.16.0 https://github.com/open-quantum-safe/liboqs /tmp/liboqs \
         && cmake -S /tmp/liboqs -B /tmp/liboqs/build \
@@ -48,23 +49,37 @@ RUN if [ "$NOVA_OQS" = "1" ]; then \
         && cmake --build /tmp/liboqs/build --parallel 4 \
         && cmake --build /tmp/liboqs/build --target install \
         && ldconfig \
-        && rm -rf /tmp/liboqs; \
+        && rm -rf /tmp/liboqs \
+        && echo "[liboqs] 系统库编译安装完成" \
+        || echo "[liboqs] 编译安装失败，将回退 Ed25519（见上方日志）"; \
     fi
 
 # 让 liboqs-python 直接找到系统 liboqs：
 #   - OQS_INSTALL_PATH=/usr/local -> 直接从 /usr/local/lib/liboqs.so 加载
 #   - ldconfig 已更新缓存，find_library 可兜底
-ENV LD_LIBRARY_PATH=/usr/local/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} \
+ENV LD_LIBRARY_PATH=/usr/local/lib \
     OQS_INSTALL_PATH=/usr/local
 
-# 安装 liboqs-python（独立 RUN，便于定位失败步骤）
-RUN if [ "$NOVA_OQS" = "1" ]; then pip install liboqs-python==0.16.0; fi
+# 安装 liboqs-python（尽力而为）
+RUN if [ "$NOVA_OQS" = "1" ]; then \
+        pip install liboqs-python==0.16.0 \
+        && echo "[liboqs] liboqs-python 安装完成" \
+        || echo "[liboqs] liboqs-python 安装失败，将回退 Ed25519"; \
+    fi
 
-# 验证 1：import oqs 并打印 liboqs 版本（独立 RUN）
-RUN if [ "$NOVA_OQS" = "1" ]; then python -c "import oqs; print('import OK, liboqs', oqs.get_liboqs_version())"; fi
+# 验证 1：import oqs（尽力而为，失败不阻断）
+RUN if [ "$NOVA_OQS" = "1" ]; then \
+        python -c "import oqs; print('import OK, liboqs', oqs.get_liboqs_version())" \
+        && echo "[liboqs] import 成功" \
+        || echo "[liboqs] import oqs 失败，将回退 Ed25519（见上方日志）"; \
+    fi
 
-# 验证 2：Dilithium5 签名器可用（独立 RUN）
-RUN if [ "$NOVA_OQS" = "1" ]; then python -c "from oqs import Signature; s = Signature('Dilithium5'); s.free(); print('Dilithium5 OK')"; fi
+# 验证 2：Dilithium5 签名器可用（尽力而为）
+RUN if [ "$NOVA_OQS" = "1" ]; then \
+        python -c "from oqs import Signature; s = Signature('Dilithium5'); s.free(); print('Dilithium5 OK')" \
+        && echo "[liboqs] Dilithium5 可用" \
+        || echo "[liboqs] Dilithium5 不可用，将回退 Ed25519（见上方日志）"; \
+    fi
 
 # 拷贝源码（genesis.json 等运行时文件一并带入）
 COPY . .

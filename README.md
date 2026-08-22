@@ -56,7 +56,7 @@ python -c "from core.crypto import QuantumWallet; w = QuantumWallet(); print('�
 5. 把 `https://你的域名:8080` 填入 `apps-common.js` 的 `PUBLIC_RPC`（或通过 `?rpc=` / 设置页临时指定）。
 
 ## Docker 部署（GHCR 自动构建）
-镜像：`ghcr.io/cortex-forest/novachain`。镜像内置抗量子签名（liboqs-python + Dilithium5，构建期预编译，运行时无需联网/编译）、TLS 自签证书自动生成（`docker-entrypoint.sh`）、状态持久化与健康检查。
+镜像：`ghcr.io/cortex-forest/novachain`。镜像默认尝试启用抗量子签名（liboqs-python + Dilithium5，构建期预编译）；若构建环境无法编译抗量子库则自动回退 Ed25519（`/api/status` 如实显示 `quantum_safe` 状态）。含 TLS 自签证书自动生成（`docker-entrypoint.sh`）、状态持久化与健康检查。
 - **GitHub Actions 自动构建（零配置，推荐）**：推送到 GitHub 后，`.github/workflows/docker-publish.yml` 会在 push 到 main、打 `v*` 标签或手动触发时自动构建并推送 GHCR（用 GitHub 内置 token，**无需任何 Secrets / 无需 Docker Hub 账号**）。`git push` 即自动出镜像，镜像页：`https://github.com/Cortex-Forest/novachain/pkgs/container/novachain`。
 - **本地一键启动**：`docker compose up -d --build`；链状态 / TLS 证书 / 聊天索引存于 `nova_data` 卷（容器内 `/data`）。
 - **CORS 白名单**：`.env` 设 `NOVA_CORS_ORIGINS=https://xxx.vercel.app`（本地演示可 `*`）。
