@@ -57,11 +57,14 @@ RUN if [ "$NOVA_OQS" = "1" ]; then \
 ENV LD_LIBRARY_PATH=/usr/local/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} \
     OQS_INSTALL_PATH=/usr/local
 
-# 安装 liboqs-python 并验证 Dilithium5 可用
-RUN if [ "$NOVA_OQS" = "1" ]; then \
-        pip install liboqs-python==0.16.0 \
-        && python -c "import oqs; s = oqs.Signature('Dilithium5'); s.free(); print('liboqs OK, version', oqs.get_liboqs_version())"; \
-    fi
+# 安装 liboqs-python（独立 RUN，便于定位失败步骤）
+RUN if [ "$NOVA_OQS" = "1" ]; then pip install liboqs-python==0.16.0; fi
+
+# 验证 1：import oqs 并打印 liboqs 版本（独立 RUN）
+RUN if [ "$NOVA_OQS" = "1" ]; then python -c "import oqs; print('import OK, liboqs', oqs.get_liboqs_version())"; fi
+
+# 验证 2：Dilithium5 签名器可用（独立 RUN）
+RUN if [ "$NOVA_OQS" = "1" ]; then python -c "from oqs import Signature; s = Signature('Dilithium5'); s.free(); print('Dilithium5 OK')"; fi
 
 # 拷贝源码（genesis.json 等运行时文件一并带入）
 COPY . .
