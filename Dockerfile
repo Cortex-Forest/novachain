@@ -47,11 +47,15 @@ RUN if [ "$NOVA_OQS" = "1" ]; then \
              -DCMAKE_INSTALL_PREFIX=/usr/local \
         && cmake --build /tmp/liboqs/build --parallel 4 \
         && cmake --build /tmp/liboqs/build --target install \
+        && ldconfig \
         && rm -rf /tmp/liboqs; \
     fi
 
-# 让 liboqs-python 直接加载系统 liboqs（避免运行时自动编译）
-ENV LD_LIBRARY_PATH=/usr/local/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+# 让 liboqs-python 直接找到系统 liboqs：
+#   - OQS_INSTALL_PATH=/usr/local -> 直接从 /usr/local/lib/liboqs.so 加载
+#   - ldconfig 已更新缓存，find_library 可兜底
+ENV LD_LIBRARY_PATH=/usr/local/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} \
+    OQS_INSTALL_PATH=/usr/local
 
 # 安装 liboqs-python 并验证 Dilithium5 可用
 RUN if [ "$NOVA_OQS" = "1" ]; then \
